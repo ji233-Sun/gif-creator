@@ -65,9 +65,13 @@ src/
 
 | 变量 | 说明 |
 | --- | --- |
-| `VERCEL_AI_GATEWAY_URL` | Vercel AI Gateway 地址 |
-| `VERCEL_AI_GATEWAY_KEY` | Vercel AI Gateway 密钥 |
+| `DIRECTOR_PROVIDER` | `gateway`（默认）或 `deepseek` |
+| `VERCEL_AI_GATEWAY_KEY` | Gateway 模式的密钥 |
+| `DEEPSEEK_API_KEY` | DeepSeek 模式的密钥 |
 | `TRIPO_API_KEY` | Tripo API 密钥 |
-| `DIRECTOR_MODEL` | 导演使用的模型型号 |
+| `DIRECTOR_MODEL` | 可选；需支持图片和工具调用。DeepSeek 默认使用 `deepseek-flash` |
+| `TRIPO_MODEL` / `TRIPO_RIG_MODEL` | 可选的 Tripo 生模、绑骨版本 |
 
-这些密钥只存在于服务端环境变量中，浏览器通过 `/api/llm` 与 `/api/model` 代理访问上游服务。
+在支持 WebAssembly JSPI 的浏览器中上传角色图，勾选第三方处理授权，再选择「生成模型并绑定骨骼」。仅选图不会发送数据；停止等待不会取消云任务。页面可显示进度及骨骼，预览并下载 GLB。GIF 导出仍未接通。
+
+密钥仅存在于服务端；对外部署前应为付费代理配置访问控制和共享限流。`pnpm test:run` 不访问付费服务；配置 DeepSeek 密钥后，可用 `PAJI_LIVE_DEEPSEEK=1 pnpm test:run src/director/runtime.test.ts` 测试真实 AI 与模拟 Tripo 的编排。
