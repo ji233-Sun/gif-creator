@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import Image from "next/image";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { Button } from "@ui-sdk/react/button";
 import {
@@ -48,7 +49,40 @@ import {
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { characterImageType, IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS } from "@/lib/character-image";
 import { Mascot, type Actor, type Mood } from "./mascot";
+import { DirectorRuntime } from "@/director/runtime";
+import { ModelWorkflow, SubmissionUnknownError, UnusableModelAssetError, type ModelAsset, type ModelPhase, type Progress } from "@/model/provider";
+import { TripoProvider } from "@/model/tripo";
+import type { ModelInfo, StageLoadFailure } from "@/stage/model-stage";
+
+type ReadyAsset = ModelAsset & { download: string; bones: number };
+const ModelStage = dynamic(() => import("@/stage/model-stage").then((m) => m.ModelStage), { ssr: false });
+const phases = { generate: "生成 3D 模型", check: "检查是否可绑骨", rig: "绑定骨骼" };
+
+const restartDescription = {
+  generate: "只重新提交模型生成。新模型加载前，会保留已加载的 GLB。",
+  check: "保留已生成的模型，只重新提交绑骨检查。",
+  rig: "保留已生成的模型，只重新提交绑定骨骼。",
+};
+
+function RestartPhase({ phase, disabled, onConfirm }: { phase: ModelPhase; disabled: boolean; onConfirm: () => void }) {
+  return (
+    <Dialog>
+      <DialogTrigger className="button button-secondary" disabled={disabled}>重新提交{phases[phase]}</DialogTrigger>
+      <DialogContent className="guide-dialog">
+        <DialogTitle>重新提交{phases[phase]}？</DialogTitle>
+        <DialogDescription>
+          {restartDescription[phase]} 这会创建新的 Tripo 任务，可能再次消耗服务额度。
+        </DialogDescription>
+        <div className="model-controls restart-actions">
+          <DialogClose className="button button-secondary">取消</DialogClose>
+          <DialogClose className="button button-primary" onClick={onConfirm}>确认重新提交</DialogClose>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 const actors: { id: Actor; name: string; description: string; tag: string }[] =
   [
@@ -115,8 +149,7 @@ function Guide() {
         <div className="notice">
           <Info size={17} />
           <p>
-            当前开放界面体验：上传图片可在本地预览，内置演员可体验情绪与动效。AI
-            建模、导演和 GIF 导出正在筹备中。
+            上传图片后可请 AI 导演生成模型并绑定骨骼；内置演员可体验示例情绪和动效。GIF 导出仍在筹备中。
           </p>
         </div>
         <DialogClose className="button button-primary guide-confirm">
@@ -135,15 +168,40 @@ export function Studio() {
   const [playing, setPlaying] = useState(true);
   const [intensity, setIntensity] = useState(6);
   const [showCaption, setShowCaption] = useState(true);
-  const [upload, setUpload] = useState<{ url: string; name: string } | null>(
-    null,
-  );
+  const [upload, setUpload] = useState<{ url: string; name: string; file: File } | null>(null);
+  const [supported, setSupported] = useState<boolean | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [asset, setAsset] = useState<ReadyAsset | null>(null);
+  const [pendingAsset, setPendingAsset] = useState<ModelAsset | null>(null);
+  const [skeleton, setSkeleton] = useState(true);
+  const [message, setMessage] = useState("");
+  const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [modelError, setModelError] = useState("");
+  const [restartable, setRestartable] = useState<ModelPhase | null>(null);
+  const [submissionBlocked, setSubmissionBlocked] = useState(false);
+  const [narrationUnavailable, setNarrationUnavailable] = useState(false);
+  const workflow = useRef<ModelWorkflow | null>(null);
+  const director = useRef<DirectorRuntime | null>(null);
+  const run = useRef<AbortController | null>(null);
+  const selection = useRef(0);
+  const load = useRef<{ blob: Blob; settle: (info?: ModelInfo, failure?: StageLoadFailure) => boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [previewUpload, setPreviewUpload] = useState(false);
   const input = useRef<HTMLInputElement>(null);
-  const preview = useRef<HTMLElement>(null);
   const selectedActor = actors.find((item) => item.id === actor)!;
+  const hasUpload = upload !== null;
+
+  useEffect(() => {
+    if (!hasUpload) return;
+    let active = true;
+    void DirectorRuntime.supported().catch(() => false).then(canDirect => {
+      if (active) setSupported(canDirect);
+    });
+    return () => { active = false; };
+  }, [hasUpload]);
 
   useEffect(() => {
     return () => {
@@ -151,19 +209,132 @@ export function Studio() {
     };
   }, [upload]);
 
-  function selectFile(file?: File) {
-    if (!file) return;
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+  useEffect(() => () => {
+    selection.current++;
+    run.current?.abort();
+    director.current?.close();
+    workflow.current = null;
+  }, []);
+
+  useEffect(() => () => { if (asset) URL.revokeObjectURL(asset.download); }, [asset]);
+
+  function resetModel() {
+    director.current?.close();
+    director.current = null;
+    workflow.current = null;
+    setConsent(false);
+    setAsset(null);
+    setPendingAsset(null);
+    setMessage("");
+    setStatus("");
+    setModelError("");
+    setRestartable(null);
+    setSubmissionBlocked(false);
+    setNarrationUnavailable(false);
+    setProgress(null);
+  }
+
+  async function selectFile(file?: File) {
+    if (!file || run.current) return;
+    const version = ++selection.current;
+    if (!IMAGE_TYPES.some((type) => type === file.type)) {
       setError("这位演员的档案格式不支持，请选择 PNG、JPG 或 WebP 图片。");
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setError("图片有点大啦，请选择不超过 10 MB 的角色图。");
+    if (!file.size || file.size > MAX_IMAGE_BYTES) {
+      setError("请使用不超过 10 MiB 的有效角色图。");
       return;
     }
+    try {
+      if (characterImageType(new Uint8Array(await file.slice(0, 12).arrayBuffer())) !== file.type) throw new Error("图片格式不符");
+      const bitmap = await createImageBitmap(file);
+      const pixels = bitmap.width * bitmap.height;
+      bitmap.close();
+      if (pixels > MAX_IMAGE_PIXELS) {
+        if (version === selection.current) setError("角色图像素数过大，请缩小图片后重试。");
+        return;
+      }
+    } catch {
+      if (version === selection.current) setError("图片无法读取，请换一张有效的角色图。");
+      return;
+    }
+    if (version !== selection.current || run.current) return;
+    resetModel();
     setError("");
-    setUpload({ url: URL.createObjectURL(file), name: file.name });
+    setUpload({ url: URL.createObjectURL(file), name: file.name, file });
     setPreviewUpload(true);
+  }
+
+  async function generateModel(restart?: ModelPhase) {
+    if (!upload || !consent || !supported || run.current || submissionBlocked) return;
+    const controller = new AbortController();
+    run.current = controller;
+    setBusy(true);
+    setModelError("");
+    setProgress(null);
+    setMessage("");
+    setNarrationUnavailable(false);
+    setStatus(restart ? phases[restart] : "导演正在准备…");
+    if (!workflow.current) {
+      const owner = new ModelWorkflow(new TripoProvider(), upload.file, (event) => {
+        setProgress(event);
+        setStatus(phases[event.phase]);
+      }, (value, signal) => new Promise<void>((resolve, reject) => {
+        signal.throwIfAborted();
+        function settle(info?: ModelInfo, failure?: StageLoadFailure) {
+          if (load.current !== request) return false;
+          clearTimeout(timer);
+          signal.removeEventListener("abort", cancel);
+          load.current = null;
+          setPendingAsset(null);
+          if (signal.aborted) { reject(signal.reason); return false; }
+          if (failure || !info) {
+            const ErrorType = failure?.unusable ? UnusableModelAssetError : Error;
+            reject(new ErrorType(failure?.message ?? "未检测到有效的模型。"));
+            return false;
+          }
+          setAsset({ ...value, download: URL.createObjectURL(value.glb), bones: info.bones });
+          resolve();
+          return true;
+        }
+        const request = { blob: value.glb, settle };
+        const cancel = () => settle();
+        const timer = setTimeout(() => settle(undefined, { message: "模型加载超时，请重试。" }), 60_000);
+        signal.addEventListener("abort", cancel, { once: true });
+        load.current = request;
+        setPendingAsset(value);
+      }), phase => {
+        if (workflow.current === owner) setRestartable(phase);
+      });
+      workflow.current = owner;
+      director.current = new DirectorRuntime(owner);
+    }
+    const current = workflow.current;
+    try {
+      if (restart) {
+        await current.restartPhase(restart, controller.signal);
+        setStatus(restart === "rig" ? "骨骼绑定完成" : restart === "check" ? "绑骨检查已重新完成，可继续定妆" : "模型已重新生成，可继续定妆");
+      } else {
+        const result = await director.current!.run("为当前图片生成 3D 模型、检查绑骨条件并绑定骨骼，每次只调用一个工具。", upload.file, controller.signal, event => {
+          if (event.type === "text") setMessage(event.text);
+        });
+        setStatus("骨骼绑定完成");
+        setNarrationUnavailable(result.narrationUnavailable);
+      }
+    } catch (cause) {
+      if (current.rigged) {
+        setStatus("骨骼绑定完成");
+        setNarrationUnavailable(!controller.signal.aborted);
+      } else if (controller.signal.aborted) setStatus("已停止等待，可在当前页面继续任务");
+      else {
+        setStatus("任务暂停");
+        if (cause instanceof SubmissionUnknownError) setSubmissionBlocked(true);
+        setModelError(cause instanceof Error ? cause.message : "定妆失败，请重试。");
+      }
+    } finally {
+      run.current = null;
+      setBusy(false);
+    }
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
@@ -178,10 +349,9 @@ export function Studio() {
     setPlaying(true);
   }
 
-  function jumpToPreview() {
-    setPreviewUpload(false);
-    preview.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
+  const stageAsset = pendingAsset ?? asset;
+  const showModel = previewUpload && Boolean(stageAsset);
+  const rigged = asset?.rigged === true;
 
   return (
     <Tabs
@@ -211,7 +381,7 @@ export function Studio() {
             创作片场
             <Sparkles size={15} className="nav-sparkle" />
           </TabsTab>
-          <TabsTab value="works" className="nav-item">
+          <TabsTab value="works" className="nav-item" disabled={busy}>
             <FolderHeart size={19} />
             我的作品<span className="nav-count">0</span>
           </TabsTab>
@@ -364,9 +534,15 @@ export function Studio() {
                           </span>
                         </div>
                         <strong className="uploaded-name">{upload.name}</strong>
-                        <p>角色图已留在本地，随时可以换一张</p>
+                        <p>确认定妆前，角色图仅在本地预览。</p>
+                        {!previewUpload && (
+                          <Button className="button button-secondary" onClick={() => setPreviewUpload(true)}>
+                            <MonitorPlay size={16} /> 返回我的演员
+                          </Button>
+                        )}
                         <Button
                           className="button button-primary"
+                          disabled={busy}
                           onClick={() => input.current?.click()}
                         >
                           <Upload size={16} />
@@ -374,7 +550,11 @@ export function Studio() {
                         </Button>
                         <Button
                           className="remove-upload"
+                          disabled={busy}
                           onClick={() => {
+                            selection.current++;
+                            resetModel();
+                            setError("");
                             setUpload(null);
                             setPreviewUpload(false);
                           }}
@@ -408,7 +588,7 @@ export function Studio() {
                           <ArrowUpRight size={16} />
                         </Button>
                         <span className="upload-formats">
-                          PNG / JPG / WebP<span>·</span>最大 10 MB
+                          PNG / JPG / WebP<span>·</span>最大 10 MiB
                         </span>
                       </>
                     )}
@@ -424,7 +604,7 @@ export function Studio() {
                         <span className="tiny-lock">
                           <Layers size={13} />
                         </span>
-                        当前仅在本地预览，你的角色图不会上传。
+                        选择图片不会上传；开始 AI 定妆前会征求你的同意。
                       </p>
                     )}
                   </div>
@@ -450,6 +630,7 @@ export function Studio() {
                           actor === item.id && !previewUpload && "selected",
                         )}
                         aria-pressed={actor === item.id && !previewUpload}
+                        disabled={busy}
                         onClick={() => chooseActor(item.id)}
                       >
                         <span className="sample-illustration">
@@ -484,7 +665,6 @@ export function Studio() {
               </div>
 
               <section
-                ref={preview}
                 className="panel preview-panel"
                 aria-labelledby="preview-title"
               >
@@ -497,7 +677,7 @@ export function Studio() {
                   </div>
                   <span className="live-tag">
                     <span />
-                    {previewUpload ? "本地预览" : "示例预览"}
+                    {showModel ? (rigged ? "已绑定骨骼" : asset ? "3D 预览" : "加载模型中") : previewUpload ? "本地预览" : "示例预览"}
                   </span>
                 </div>
                 <div
@@ -512,9 +692,18 @@ export function Studio() {
                   <span className="stage-corner corner-bl" />
                   <span className="stage-corner corner-br" />
                   <span className="stage-label">
-                    {previewUpload ? "ORIGINAL IMAGE" : "PAJI / LITTLE THEATER"}
+                    {showModel ? "PAJI / 3D STAGE" : previewUpload ? "ORIGINAL IMAGE" : "PAJI / LITTLE THEATER"}
                   </span>
-                  {previewUpload && upload ? (
+                  {showModel && stageAsset ? (
+                    <ModelStage
+                      blob={stageAsset.glb}
+                      rigged={stageAsset.rigged}
+                      skeleton={skeleton}
+                      visible={view === 'studio'}
+                      onInfo={(blob, info) => load.current?.blob === blob ? load.current.settle(info) : asset?.glb === blob}
+                      onError={(blob, failure) => { if (load.current?.blob === blob) load.current.settle(undefined, failure); }}
+                    />
+                  ) : previewUpload && upload ? (
                     <div className="original-preview">
                       <Image
                         unoptimized
@@ -523,7 +712,7 @@ export function Studio() {
                         src={upload.url}
                         alt="上传角色的本地预览"
                       />
-                      <span>原图预览 · AI 定妆筹备中</span>
+                      <span>原图预览 · 确认后开始 AI 定妆</span>
                     </div>
                   ) : (
                     <>
@@ -581,18 +770,23 @@ export function Studio() {
                     </span>
                   </div>
                   {previewUpload ? (
-                    <div className="preview-upload-notice">
-                      <Info size={18} />
-                      <p>
-                        AI 建模与 GIF 导出尚未开放，先用内置演员体验片场吧。
-                      </p>
-                      <Button
-                        className="button button-secondary"
-                        onClick={jumpToPreview}
-                      >
-                        体验内置演员
-                        <ArrowRight size={15} />
-                      </Button>
+                    <div className="model-controls">
+                      <label><input type="checkbox" checked={consent} disabled={busy} onChange={(event) => setConsent(event.target.checked)} /> 我有权使用这张图片，并同意将图片发送给 AI 导演服务和 Tripo。生成与绑骨会消耗服务额度。</label>
+                      {!rigged && <Button className="button button-primary" disabled={!consent || supported !== true || busy || submissionBlocked} onClick={() => void generateModel()}>
+                        <WandSparkles size={16} /> {status ? "继续定妆" : "生成模型并绑定骨骼"}
+                      </Button>}
+                      {!rigged && restartable && <RestartPhase phase={restartable} disabled={!consent || supported !== true || busy || submissionBlocked} onConfirm={() => void generateModel(restartable)} />}
+                      {supported === null && <p>正在检查浏览器是否支持 3D 定妆…</p>}
+                      {supported === false && <p className="error-message">当前浏览器不支持 WebAssembly JSPI，请使用最新版 Chrome 或 Safari 27+。</p>}
+                      {busy && <Button className="button button-secondary" onClick={() => run.current?.abort()}>停止等待</Button>}
+                      {busy && <p>停止等待不会取消已提交的云端任务。</p>}
+                      {status && <p role="status">{rigged ? "骨骼绑定完成" : status}</p>}
+                      {modelError && <p role="alert" className="error-message">{modelError}</p>}
+                      {busy && progress && <progress aria-label={phases[progress.phase]} max={100} value={Math.max(0, Math.min(100, progress.task.progress))} />}
+                      {narrationUnavailable && <p>模型可以下载，导演旁白暂未返回。</p>}
+                      {message && <p className="model-message" aria-live="polite">导演旁白：{message}</p>}
+                      {rigged && <label><input type="checkbox" checked={skeleton} onChange={(event) => setSkeleton(event.target.checked)} /> 显示骨骼（{asset.bones} 根）</label>}
+                      {asset && <a className="button button-secondary" href={asset.download} download={rigged ? "paji-rigged.glb" : "paji-model.glb"}>下载 GLB <ArrowDown size={15} /></a>}
                     </div>
                   ) : (
                     <>
@@ -682,7 +876,7 @@ export function Studio() {
                   <WandSparkles size={14} />
                   <span>
                     {previewUpload
-                      ? "上传图仅用于本地预览"
+                      ? "定妆支持 GLB 下载；GIF 导出仍在筹备中。"
                       : "这是示例动效，你的角色会有自己的戏。"}
                   </span>
                 </div>
@@ -717,7 +911,7 @@ export function Studio() {
               <p>
                 这里将收集你导出的表情包。当前可先在片场体验内置演员，
                 <br />
-                AI 生成和作品保存功能正在筹备中。
+                作品保存和 GIF 导出仍在筹备中。
               </p>
               <Button
                 className="button button-primary"

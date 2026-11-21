@@ -65,9 +65,15 @@ src/
 
 | 变量 | 说明 |
 | --- | --- |
-| `VERCEL_AI_GATEWAY_URL` | Vercel AI Gateway 地址 |
-| `VERCEL_AI_GATEWAY_KEY` | Vercel AI Gateway 密钥 |
+| `DIRECTOR_PROVIDER` | `gateway`（默认）或 `deepseek` |
+| `VERCEL_AI_GATEWAY_KEY` | Gateway 模式的密钥 |
+| `DEEPSEEK_API_KEY` | DeepSeek 模式的密钥 |
 | `TRIPO_API_KEY` | Tripo API 密钥 |
-| `DIRECTOR_MODEL` | 导演使用的模型型号 |
+| `DIRECTOR_MODEL` | 可选；需支持图片和工具调用。DeepSeek 默认使用 `deepseek-flash` |
+| `TRIPO_MODEL` / `TRIPO_RIG_MODEL` | 可选的 Tripo 生模、绑骨版本 |
 
-这些密钥只存在于服务端环境变量中，浏览器通过 `/api/llm` 与 `/api/model` 代理访问上游服务。
+在支持 WebAssembly JSPI 的浏览器中上传 PNG、JPEG 或 WebP 角色图（最大 10 MiB、16,777,216 像素），勾选第三方处理授权，再选择「生成模型并绑定骨骼」。仅选图不会发送数据；大图会在浏览器中缩小后发给 AI 导演，WebP 会由服务端转为 PNG 后发给 Tripo。页面可显示进度及骨骼，预览并下载 GLB。GIF 导出仍未接通。
+
+「停止等待」不会取消已提交的云任务。在同一演员页面继续定妆会复用已提交的任务；如果提交结果未知，当前页面不会重新提交这一步，请先查看 Tripo 任务记录。原任务已失效或文件无法预览时，可以先重试原任务；确认重新提交对应阶段会创建新的 Tripo 任务，可能再次消耗额度。已加载的 GLB 在替换成功前仍可预览和下载。任务访问凭证只保存在当前页面，刷新或换图后不会恢复。
+
+密钥仅存在于服务端。应用内的任务归属校验不等同于付费代理的访问控制：当前仅适合本地或受控使用，对外部署前应由可信反代覆盖客户端 IP 请求头，并为付费接口配置鉴权和共享配额。`pnpm test:run` 不访问付费服务；配置 DeepSeek 密钥后，可用 `PAJI_LIVE_DEEPSEEK=1 pnpm test:run src/director/runtime.test.ts` 测试真实 AI 与模拟 Tripo 的编排。
