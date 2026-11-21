@@ -565,6 +565,7 @@ h2 {
     background 0.2s,
     border-color 0.2s;
 }
+.upload-zone > .button + .button { margin-top: 0.5rem; }
 .upload-zone.dragging {
   background: #fff0f7;
   border-color: var(--pink);
@@ -1053,6 +1054,7 @@ h2 {
   z-index: 3;
 }
 .preview-controls {
+  min-width: 0;
   padding: 19px 22px 0;
 }
 .preview-actor-row {
@@ -1278,8 +1280,10 @@ h2 {
 .stage-canvas { position: absolute; inset: 0; }
 .stage-canvas canvas { display: block; }
 .stage-error { position: absolute; inset: 40% 1rem auto; padding: 0.75rem; background: var(--surface); color: var(--pink-deep); }
-.model-controls { display: grid; gap: 0.75rem; justify-items: start; margin-top: 1rem; font-size: 0.875rem; }
+.model-controls { display: grid; min-width: 0; gap: 0.75rem; justify-items: start; margin: 1rem 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+.model-controls .error-message { color: var(--pink-deep); line-height: 1.7; }
 .model-controls input, .model-controls progress { accent-color: var(--pink-deep); }
+.restart-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; margin-bottom: 0; }
 .model-controls progress { width: 100%; }
 .model-message { max-height: 10rem; overflow: auto; overflow-wrap: anywhere; white-space: pre-wrap; }
 
@@ -1964,7 +1968,7 @@ h2 {
   }
   .preview-panel {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     padding-top: 0;
   }
   .preview-panel > .section-heading {

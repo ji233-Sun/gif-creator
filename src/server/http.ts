@@ -6,15 +6,18 @@ export class HttpError extends Error {
 
 const windows = new Map<string, { count: number; reset: number }>();
 
-export function guard(request: NextRequest, limit = 60) {
+export function guard(request: NextRequest, limit = 60, bucket = request.nextUrl.pathname) {
   const origin = request.headers.get('origin');
   const host = request.headers.get('host') ?? request.nextUrl.host;
   const expectedOrigin = `${request.nextUrl.protocol}//${host}`;
   if (origin && origin !== expectedOrigin) throw new HttpError(403, '请求来源不受信任');
   const now = Date.now();
   for (const [key, value] of windows) if (value.reset < now) windows.delete(key);
-  const key = `${request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'local'}:${request.method}:${request.nextUrl.pathname}`;
-  const entry = windows.get(key) ?? { count: 0, reset: now + 60_000 };
+  const client = request.headers.get('x-forwarded-for')?.split(',', 1)[0]?.trim().slice(0, 64) || 'local';
+  const key = `${client}:${request.method}:${bucket}`;
+  const current = windows.get(key);
+  if (!current && windows.size >= 1000) throw new HttpError(429, '请求过于频繁，请稍后再试');
+  const entry = current ?? { count: 0, reset: now + 60_000 };
   if (++entry.count > limit) throw new HttpError(429, '请求过于频繁，请稍后再试');
   windows.set(key, entry);
 }
@@ -35,8 +38,8 @@ export async function readJson(request: Request, maxBytes = 2_000_000): Promise<
   catch { throw new HttpError(400, 'JSON 格式无效'); }
 }
 
-export function failure(error: unknown) {
-  return NextResponse.json({ error: error instanceof HttpError ? error.message : '服务请求失败，请稍后重试' }, {
+export function failure(error: unknown, details: Record<string, string> = {}) {
+  return NextResponse.json({ ...details, error: error instanceof HttpError ? error.message : '服务请求失败，请稍后重试' }, {
     status: error instanceof HttpError ? error.status : 502,
   });
 }
