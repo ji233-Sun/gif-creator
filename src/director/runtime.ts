@@ -1,6 +1,7 @@
 import type { FxAgent, FxTurn } from 'libfx/browser';
 import { actorPlanSchema, type ActorPlan } from '@/model/actor-plan';
 import { directorImage } from './image';
+import { directorBaseUrlHeader, directorModelHeader, directorProviderHeader, type DirectorSettings } from './settings';
 
 const invalidPlan = 'AI 导演没有给出有效的 3D 角色方案，请重试或换一张轮廓清晰的角色图。';
 const vector = { type: 'array', items: { type: 'number' }, minItems: 3, maxItems: 3 };
@@ -32,6 +33,7 @@ const instructions = [
 
 export class DirectorRuntime {
   private active: AbortController | null = null;
+  constructor(private readonly settings: DirectorSettings) {}
 
   static async supported() { return (await import('libfx/browser')).supportsJspi(); }
 
@@ -66,8 +68,16 @@ export class DirectorRuntime {
           requestSignal.throwIfAborted();
           if (sent) throw fail(new Error(invalidPlan));
           sent = true;
+          if (input !== `${window.location.origin}/api/llm/chat/completions`) throw fail(new Error('AI 代理地址无效。'));
+          const headers = new Headers(init.headers);
+          headers.set(directorProviderHeader, this.settings.provider);
+          headers.set(directorModelHeader, this.settings.model);
+          if (this.settings.provider !== 'chatgpt') {
+            headers.set('Authorization', `Bearer ${this.settings.key}`);
+            if (this.settings.baseUrl) headers.set(directorBaseUrlHeader, this.settings.baseUrl);
+          }
           let response: Response;
-          try { response = await fetch(input, { ...init, signal: requestSignal }); }
+          try { response = await fetch(input, { ...init, headers, redirect: 'error', signal: requestSignal }); }
           catch (error) {
             if (requestSignal.aborted) throw error;
             throw fail(new Error('无法连接 AI 导演服务，请重试。'));

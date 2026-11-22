@@ -2,6 +2,11 @@ import { File as NodeFile } from 'node:buffer';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
+import type { DirectorSettings } from '@/director/settings';
+
+vi.mock('./ai-settings', () => ({ AiSettings: ({ onChange }: { onChange: (settings: DirectorSettings) => void }) => (
+  <button onClick={() => onChange({ provider: 'openai-responses', model: 'gpt-5-mini', key: 'fixture' })}>配置测试模型</button>
+) }));
 
 const director = vi.hoisted(() => ({ design: vi.fn() }));
 vi.mock('@/director/runtime', () => ({
@@ -32,8 +37,10 @@ it('replaces the dressing button with elapsed time and the actual stage until st
     const pngHeader = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
     Object.defineProperty(fileInput, 'files', { value: [new NodeFile([pngHeader], 'test.png', { type: 'image/png' })] });
     await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })));
-    await act(async () => host.querySelector<HTMLInputElement>('.model-controls input')!.click());
     const button = (name: string) => Array.from(host.querySelectorAll('button')).find(element => element.textContent?.trim() === name);
+    expect(button('生成模型并绑定骨骼')?.disabled).toBe(true);
+    await act(async () => button('配置测试模型')!.click());
+    await act(async () => host.querySelector<HTMLInputElement>('.model-controls input')!.click());
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
     await act(async () => button('生成模型并绑定骨骼')!.click());
     expect(button('生成模型并绑定骨骼')).toBeUndefined();

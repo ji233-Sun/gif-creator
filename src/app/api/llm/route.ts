@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { characterImageType } from '@/lib/character-image';
 import { failure, guard, HttpError, readJson } from '@/server/http';
 import { validateImagePixels } from '@/server/model-image';
+import { baseUrlSchema, directorBaseUrlHeader, directorModelHeader, directorProviderHeader, keySchema, modelSchema, providerSchema } from '@/director/settings';
+import { invokeDirector } from '@/server/ai-transport';
+import { chatGptAccessToken } from '@/server/chatgpt-session';
 
 export const runtime = 'nodejs';
 const toolName = z.literal('design_actor');
@@ -21,53 +24,39 @@ const imagePart = z.object({ type: z.literal('image_url'), image_url: z.object({
   url: imageUrl,
   detail: z.enum(['auto', 'low', 'high']).optional(),
 }) });
-const textContent = z.union([z.string(), z.array(textPart)]);
-const message = z.discriminatedUnion('role', [
-  z.object({ role: z.literal('system'), content: z.string() }),
-  z.object({ role: z.literal('user'), content: z.union([z.string(), z.array(z.union([textPart, imagePart])).max(2)]) }),
-  z.object({ role: z.literal('assistant'), content: textContent.nullish(), tool_calls: z.array(z.object({
-    id: z.string(), type: z.literal('function'), function: z.object({ name: toolName, arguments: z.string() }),
-  })).max(6).optional() }),
-  z.object({ role: z.literal('tool'), tool_call_id: z.string(), content: textContent }),
-]);
 const requestSchema = z.object({
-  messages: z.array(message).min(1).max(24),
-  stream: z.boolean().optional(),
-  stream_options: z.object({ include_usage: z.boolean().optional() }).optional(),
-  tools: z.array(z.object({ type: z.literal('function'), function: z.object({ name: toolName, description: z.string().optional(), parameters: z.record(z.string(), z.unknown()).optional() }) })).max(3).optional(),
-  tool_choice: z.enum(['none', 'auto', 'required']).optional(),
+  messages: z.tuple([
+    z.object({ role: z.literal('system'), content: z.string().min(1).max(16_384) }),
+    z.object({ role: z.literal('user'), content: z.array(z.union([textPart, imagePart])).length(2) }),
+  ]),
+  tools: z.tuple([z.object({ type: z.literal('function'), function: z.object({
+    name: toolName, description: z.string().max(1024).optional(), parameters: z.record(z.string(), z.unknown()).optional(),
+  }) })]),
 });
 
 export async function POST(request: NextRequest) {
   try {
     guard(request, 30);
-    const deepseek = process.env.DIRECTOR_PROVIDER === 'deepseek';
-    const keyName = deepseek ? 'DEEPSEEK_API_KEY' : 'VERCEL_AI_GATEWAY_KEY';
-    const key = process.env[keyName];
-    if (!key) throw new HttpError(503, `请在服务端配置 ${keyName}`);
-    const parsed = requestSchema.safeParse(await readJson(request, 16 * 1024 * 1024));
-    if (!parsed.success) throw new HttpError(400, '模型请求格式无效');
-    const images = new Set<string>();
-    for (const entry of parsed.data.messages) {
-      if (entry.role !== 'user' || !Array.isArray(entry.content)) continue;
-      for (const part of entry.content) if (part.type === 'image_url') images.add(part.image_url.url);
-    }
-    if (images.size > 1) throw new HttpError(400, '一次只能为一位演员定妆');
-    for (const url of images) await validateImagePixels(Buffer.from(url.slice(url.indexOf(',') + 1), 'base64'));
-    const response = await fetch(deepseek ? 'https://api.deepseek.com/chat/completions' : 'https://ai-gateway.vercel.sh/v1/chat/completions', {
-      method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ...parsed.data, model: process.env.DIRECTOR_MODEL?.trim() || (deepseek ? 'deepseek-flash' : 'anthropic/claude-sonnet-4.5'),
-        max_tokens: 4096,
-        ...(parsed.data.tools?.length ? { tool_choice: 'required' } : {}),
-        ...(deepseek ? { thinking: { type: 'disabled' } } : { n: 1 }),
-      }),
-      redirect: 'error', signal: AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]),
-    });
-    if (!response.ok) {
-      const status = response.status === 429 ? 429 : response.status >= 400 && response.status < 500 ? 422 : 502;
-      throw new HttpError(status, `AI 服务请求失败（${response.status}）`);
-    }
-    return new Response(response.body, { headers: { 'Content-Type': response.headers.get('content-type') ?? 'application/json', 'Cache-Control': 'no-store' } });
+    const provider = providerSchema.safeParse(request.headers.get(directorProviderHeader));
+    const model = modelSchema.safeParse(request.headers.get(directorModelHeader));
+    if (!provider.success || !model.success) throw new HttpError(400, '请在网页的 AI 设置中选择服务和模型。');
+    const baseUrlHeader = request.headers.get(directorBaseUrlHeader);
+    if (provider.data === 'chatgpt' && baseUrlHeader !== null) throw new HttpError(400, 'ChatGPT 订阅只能使用官方接口。');
+    const baseUrl = baseUrlHeader === null ? undefined : baseUrlSchema.safeParse(baseUrlHeader);
+    if (baseUrl && !baseUrl.success) throw new HttpError(400, 'Base URL 必须是有效的 HTTPS 地址，不能包含账号、查询参数或片段。');
+    const bearer = keySchema.safeParse(request.headers.get('authorization')?.match(/^Bearer (.+)$/i)?.[1]);
+    const key = provider.data === 'chatgpt'
+      ? chatGptAccessToken(request)
+      : bearer.success ? bearer.data : undefined;
+    if (!key) throw new HttpError(401, '请在网页的 AI 设置中填写该服务的 API Key。');
+    const parsed = requestSchema.safeParse(await readJson(request, 6 * 1024 * 1024));
+    if (!parsed.success) throw new HttpError(400, '模型请求格式无效。');
+    const [system, user] = parsed.data.messages;
+    const image = user.content.find(part => part.type === 'image_url');
+    if (!image || !user.content.some(part => part.type === 'text')) throw new HttpError(400, '定妆需要一张角色图和提示文字。');
+    const url = image.image_url.url;
+    await validateImagePixels(Buffer.from(url.slice(url.indexOf(',') + 1), 'base64'));
+    return await invokeDirector({ provider: provider.data, model: model.data, baseUrl: baseUrl?.data, key, system: system.content,
+      parts: user.content, tool: parsed.data.tools[0].function, signal: request.signal });
   } catch (error) { return failure(error); }
 }

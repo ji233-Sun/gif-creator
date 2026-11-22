@@ -52,6 +52,8 @@ import { cn } from "@/lib/utils";
 import { characterImageType, IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS } from "@/lib/character-image";
 import { Mascot, type Actor, type Mood } from "./mascot";
 import { DirectorRuntime } from "@/director/runtime";
+import { providers, type DirectorSettings } from "@/director/settings";
+import { AiSettings } from "./ai-settings";
 import type { ActorPlan } from "@/model/actor-plan";
 import type { ModelInfo, StageLoadFailure } from "@/stage/model-stage";
 
@@ -162,6 +164,7 @@ export function Studio() {
   const [upload, setUpload] = useState<{ url: string; name: string; file: File } | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [consent, setConsent] = useState(false);
+  const [ai, setAi] = useState<DirectorSettings | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const busy = startedAt !== null;
   const [asset, setAsset] = useState<ReadyAsset | null>(null);
@@ -246,8 +249,16 @@ export function Studio() {
     setPreviewUpload(true);
   }
 
+  function configureAi(next: DirectorSettings | null) {
+    setConsent(false);
+    setAi(next);
+    plan.current = null;
+    director.current?.close();
+    director.current = null;
+  }
+
   async function generateModel() {
-    if (!upload || !consent || !supported || run.current) return;
+    if (!upload || !consent || !supported || !ai || run.current) return;
     const controller = new AbortController();
     const { signal } = controller;
     run.current = controller;
@@ -256,7 +267,7 @@ export function Studio() {
     try {
       if (!plan.current) {
         setStatus("AI 导演正在分析角色图…");
-        director.current ??= new DirectorRuntime();
+        director.current ??= new DirectorRuntime(ai);
         plan.current = await director.current.design(upload.file, signal);
       }
       signal.throwIfAborted();
@@ -377,6 +388,7 @@ export function Studio() {
           </div>
           <div className="topbar-actions">
             <span className="beta-tag">BETA</span>
+            <AiSettings value={ai} disabled={busy} onChange={configureAi} />
             <Guide />
             <div className="profile-mark" aria-label="本地创作者">
               <span>p.</span>
@@ -730,8 +742,9 @@ export function Studio() {
                   </div>
                   {previewUpload ? (
                     <div className="model-controls">
-                      {!asset && <label><input type="checkbox" checked={consent} disabled={busy} onChange={(event) => setConsent(event.target.checked)} /> 我有权使用这张图片，并同意发送给 AI 导演分析。模型和骨骼在本地生成。</label>}
-                      {!busy && !asset && <Button className="button button-primary" disabled={!consent || supported !== true} onClick={() => void generateModel()}>
+                      {!asset && !ai && <p>请先在页面顶部的「AI 设置」选择服务和模型。</p>}
+                      {!asset && ai && <label><input type="checkbox" checked={consent} disabled={busy} onChange={(event) => setConsent(event.target.checked)} /> 我有权使用这张图片，并同意发送给 {ai.baseUrl ? new URL(ai.baseUrl).host : providers[ai.provider].label} 分析。模型和骨骼在本地生成。</label>}
+                      {!busy && !asset && <Button className="button button-primary" disabled={!consent || !ai || supported !== true} onClick={() => void generateModel()}>
                         <WandSparkles size={16} /> {status ? "继续定妆" : "生成模型并绑定骨骼"}
                       </Button>}
                       {supported === null && <p>正在检查浏览器是否支持 3D 定妆…</p>}
