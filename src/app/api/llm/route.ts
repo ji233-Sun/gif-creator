@@ -5,7 +5,7 @@ import { failure, guard, HttpError, readJson } from '@/server/http';
 import { validateImagePixels } from '@/server/model-image';
 
 export const runtime = 'nodejs';
-const toolName = z.enum(['generate_model', 'check_rig', 'rig_model']);
+const toolName = z.literal('design_actor');
 const textPart = z.object({ type: z.literal('text'), text: z.string() });
 const maxImageBase64 = 5 * 1024 * 1024;
 const imageUrl = z.string().max(maxImageBase64 + 32).refine(value => {
@@ -58,7 +58,9 @@ export async function POST(request: NextRequest) {
       method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...parsed.data, model: process.env.DIRECTOR_MODEL?.trim() || (deepseek ? 'deepseek-flash' : 'anthropic/claude-sonnet-4.5'),
-        max_tokens: 2048, ...(deepseek ? { thinking: { type: 'disabled' } } : { n: 1 }),
+        max_tokens: 4096,
+        ...(parsed.data.tools?.length ? { tool_choice: 'required' } : {}),
+        ...(deepseek ? { thinking: { type: 'disabled' } } : { n: 1 }),
       }),
       redirect: 'error', signal: AbortSignal.any([request.signal, AbortSignal.timeout(120_000)]),
     });
