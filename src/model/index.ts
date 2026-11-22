@@ -1,2 +1,2 @@
-export * from "./provider";
-export * from "./tripo";
+export * from "./actor-plan";
+export * from "./build-actor";

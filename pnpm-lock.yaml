@@ -210,6 +210,9 @@ importers:
       gifenc:
         specifier: ^1.0.0
         version: 1.0.3
+      jose:
+        specifier: ^6.2.18
+        version: 6.2.18
       libfx:
         specifier: 0.0.17
         version: 0.0.17
@@ -2113,6 +2116,9 @@ packages:
   jiti@1.21.7:
     resolution: {integrity: sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==}
     hasBin: true
+
+  jose@6.2.18:
+    resolution: {integrity: sha512-doV4thUwgkrycJH4yLeqwTGIIZphHl+pk7CPReuMIhYhncmgzdko85MaCG4YQFTxqMFr1/oEH32tZuKKovcDEg==}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -4804,6 +4810,8 @@ snapshots:
       set-function-name: 2.0.2
 
   jiti@1.21.7: {}
+
+  jose@6.2.18: {}
 
   js-tokens@4.0.0: {}
 
