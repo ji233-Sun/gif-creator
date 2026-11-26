@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type MouseEvent } from "react";
 import Image from "next/image";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -42,14 +42,22 @@ import {
   Pause,
   Play,
   Plus,
+  Settings,
+  ShieldCheck,
   Sparkles,
+  Trash2,
   Upload,
   WandSparkles,
   X,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { characterImageType, IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS } from "@/lib/character-image";
+import {
+  characterImageType,
+  IMAGE_TYPES,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_PIXELS,
+} from "@/lib/character-image";
 import { Mascot, type Actor, type Mood } from "./mascot";
 import { DirectorRuntime } from "@/director/runtime";
 import { providers, type DirectorSettings } from "@/director/settings";
@@ -58,19 +66,43 @@ import type { ActorPlan } from "@/model/actor-plan";
 import type { ModelInfo, StageLoadFailure } from "@/stage/model-stage";
 
 type ReadyAsset = { glb: Blob; download: string; bones: number };
-const ModelStage = dynamic(() => import("@/stage/model-stage").then((m) => m.ModelStage), { ssr: false });
+const ModelStage = dynamic(
+  () => import("@/stage/model-stage").then((m) => m.ModelStage),
+  { ssr: false },
+);
 
-function DressingProgress({ startedAt, status }: { startedAt: number; status: string }) {
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function DressingProgress({
+  startedAt,
+  status,
+}: {
+  startedAt: number;
+  status: string;
+}) {
   const [seconds, setSeconds] = useState(0);
   useEffect(() => {
-    const timer = window.setInterval(() => setSeconds(Math.floor((performance.now() - startedAt) / 1_000)), 250);
+    const timer = window.setInterval(
+      () => setSeconds(Math.floor((performance.now() - startedAt) / 1_000)),
+      250,
+    );
     return () => window.clearInterval(timer);
   }, [startedAt]);
   return (
     <div className="model-wait">
       <div className="model-wait-heading">
-        <p role="status">{status}</p>
-        <time dateTime={`PT${seconds}S`}>已用 {Math.floor(seconds / 60).toString().padStart(2, "0")}:{(seconds % 60).toString().padStart(2, "0")}</time>
+        <p role="status">
+          <span className="wait-pulse" aria-hidden="true" />
+          {status}
+        </p>
+        <time dateTime={`PT${seconds}S`}>
+          已用 {Math.floor(seconds / 60).toString().padStart(2, "0")}:
+          {(seconds % 60).toString().padStart(2, "0")}
+        </time>
       </div>
       <progress aria-label={status} />
     </div>
@@ -105,23 +137,32 @@ const moods: { id: Mood; label: string; caption: string }[] = [
 ];
 const steps = [
   { icon: ImagePlus, title: "选角", description: "带上你的角色" },
-  { icon: Box, title: "定妆", description: "变成 3D 小演员" },
-  { icon: Clapperboard, title: "开拍", description: "让情绪演出来" },
-  { icon: Film, title: "杀青", description: "带走你的表情包" },
+  { icon: Box, title: "定妆", description: "生成 3D 绑骨模型" },
+  { icon: Clapperboard, title: "开拍", description: "示例情绪可试玩" },
+  {
+    icon: Film,
+    title: "杀青",
+    description: "GIF 导出 · 筹备中",
+    upcoming: true,
+  },
 ];
 
 function Guide() {
   return (
     <Dialog>
-      <DialogTrigger className="button button-ghost help-button">
-        <CircleHelp size={17} /> 片场指南
+      <DialogTrigger className="button button-ghost topbar-action-btn help-button">
+        <CircleHelp size={15} />
+        <span>片场指南</span>
       </DialogTrigger>
       <DialogContent className="guide-dialog">
-        <DialogClose className="icon-button dialog-close" aria-label="关闭指南">
-          <X size={20} />
+        <DialogClose
+          className="icon-button dialog-close"
+          aria-label="关闭指南"
+        >
+          <X size={18} />
         </DialogClose>
         <span className="eyebrow">
-          <Clapperboard size={15} /> PAJI STUDIO GUIDE
+          <Clapperboard size={14} /> PAJI STUDIO GUIDE
         </span>
         <DialogTitle>欢迎来到你的脑洞片场</DialogTitle>
         <DialogDescription>
@@ -130,19 +171,21 @@ function Guide() {
         <ol className="guide-steps">
           {steps.map((step, index) => (
             <li key={step.title}>
-              <span>{index + 1}</span>
+              <span className="guide-step-num">0{index + 1}</span>
               <div>
                 <strong>{step.title}</strong>
                 <p>{step.description}</p>
               </div>
-              <step.icon size={22} />
+              <span className="guide-step-icon">
+                <step.icon size={18} />
+              </span>
             </li>
           ))}
         </ol>
         <div className="notice">
-          <Info size={17} />
+          <Info size={16} />
           <p>
-            上传图片后可请 AI 导演生成模型并绑定骨骼；内置演员可体验示例情绪和动效。GIF 导出仍在筹备中。
+            上传图片后可请 AI 导演生成模型并绑定骨骼；内置演员可体验示例情绪和动效。自有角色演戏与 GIF 导出仍在筹备中。
           </p>
         </div>
         <DialogClose className="button button-primary guide-confirm">
@@ -161,10 +204,15 @@ export function Studio() {
   const [playing, setPlaying] = useState(true);
   const [intensity, setIntensity] = useState(6);
   const [showCaption, setShowCaption] = useState(true);
-  const [upload, setUpload] = useState<{ url: string; name: string; file: File } | null>(null);
+  const [upload, setUpload] = useState<{
+    url: string;
+    name: string;
+    file: File;
+  } | null>(null);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [consent, setConsent] = useState(false);
   const [ai, setAi] = useState<DirectorSettings | null>(null);
+  const [aiDialogOpen, setAiDialogOpen] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const busy = startedAt !== null;
   const [asset, setAsset] = useState<ReadyAsset | null>(null);
@@ -173,24 +221,79 @@ export function Studio() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [modelError, setModelError] = useState("");
+  const [compactNav, setCompactNav] = useState(false);
   const plan = useRef<ActorPlan | null>(null);
   const director = useRef<DirectorRuntime | null>(null);
   const run = useRef<AbortController | null>(null);
   const selection = useRef(0);
-  const load = useRef<{ blob: Blob; settle: (info?: ModelInfo, failure?: StageLoadFailure) => boolean } | null>(null);
+  const load = useRef<{
+    blob: Blob;
+    settle: (info?: ModelInfo, failure?: StageLoadFailure) => boolean;
+  } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [previewUpload, setPreviewUpload] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const previewPanelRef = useRef<HTMLElement>(null);
+  const previewHeadingRef = useRef<HTMLHeadingElement>(null);
+  const aiReturnFocusRef = useRef<HTMLElement | null>(null);
+  const [previewFocusNonce, setPreviewFocusNonce] = useState<{
+    id: number;
+    moveFocus: boolean;
+  } | null>(null);
   const selectedActor = actors.find((item) => item.id === actor)!;
   const hasUpload = upload !== null;
 
   useEffect(() => {
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    )
+      return;
+    const mq = window.matchMedia("(max-width: 960px)");
+    const sync = () => setCompactNav(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  // Scroll & optionally move keyboard focus to Preview AFTER layout commits
+  useEffect(() => {
+    if (!previewFocusNonce) return;
+    if (
+      typeof window === "undefined" ||
+      typeof window.matchMedia !== "function"
+    )
+      return;
+    if (!window.matchMedia("(max-width: 960px)").matches) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const raf = window.requestAnimationFrame(() => {
+      const target = previewPanelRef.current;
+      if (target) {
+        const top =
+          target.getBoundingClientRect().top + window.scrollY - 64;
+        window.scrollTo({
+          top: Math.max(0, top),
+          behavior: reduced ? "auto" : "smooth",
+        });
+      }
+      if (previewFocusNonce.moveFocus) {
+        previewHeadingRef.current?.focus({ preventScroll: true });
+      }
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [previewFocusNonce]);
+
+  useEffect(() => {
     if (!hasUpload) return;
     let active = true;
-    void DirectorRuntime.supported().catch(() => false).then(canDirect => {
-      if (active) setSupported(canDirect);
-    });
-    return () => { active = false; };
+    void DirectorRuntime.supported()
+      .catch(() => false)
+      .then((canDirect) => {
+        if (active) setSupported(canDirect);
+      });
+    return () => {
+      active = false;
+    };
   }, [hasUpload]);
 
   useEffect(() => {
@@ -199,13 +302,39 @@ export function Studio() {
     };
   }, [upload]);
 
-  useEffect(() => () => {
-    selection.current++;
-    run.current?.abort();
-    director.current?.close();
-  }, []);
+  useEffect(
+    () => () => {
+      selection.current++;
+      run.current?.abort();
+      director.current?.close();
+    },
+    [],
+  );
 
-  useEffect(() => () => { if (asset) URL.revokeObjectURL(asset.download); }, [asset]);
+  useEffect(
+    () => () => {
+      if (asset) URL.revokeObjectURL(asset.download);
+    },
+    [asset],
+  );
+
+  function schedulePreviewJump(moveFocus = false) {
+    setPreviewFocusNonce((prev) => ({
+      id: (prev?.id ?? 0) + 1,
+      moveFocus,
+    }));
+  }
+
+  function handleAiOpenChange(next: boolean) {
+    setAiDialogOpen(next);
+    if (!next && aiReturnFocusRef.current) {
+      const target = aiReturnFocusRef.current;
+      aiReturnFocusRef.current = null;
+      window.requestAnimationFrame(() => {
+        if (target.isConnected) target.focus();
+      });
+    }
+  }
 
   function resetModel() {
     director.current?.close();
@@ -230,16 +359,23 @@ export function Studio() {
       return;
     }
     try {
-      if (characterImageType(new Uint8Array(await file.slice(0, 12).arrayBuffer())) !== file.type) throw new Error("图片格式不符");
+      if (
+        characterImageType(
+          new Uint8Array(await file.slice(0, 12).arrayBuffer()),
+        ) !== file.type
+      )
+        throw new Error("图片格式不符");
       const bitmap = await createImageBitmap(file);
       const pixels = bitmap.width * bitmap.height;
       bitmap.close();
       if (pixels > MAX_IMAGE_PIXELS) {
-        if (version === selection.current) setError("角色图像素数过大，请缩小图片后重试。");
+        if (version === selection.current)
+          setError("角色图像素数过大，请缩小图片后重试。");
         return;
       }
     } catch {
-      if (version === selection.current) setError("图片无法读取，请换一张有效的角色图。");
+      if (version === selection.current)
+        setError("图片无法读取，请换一张有效的角色图。");
       return;
     }
     if (version !== selection.current || run.current) return;
@@ -247,6 +383,7 @@ export function Studio() {
     setError("");
     setUpload({ url: URL.createObjectURL(file), name: file.name, file });
     setPreviewUpload(true);
+    schedulePreviewJump(false);
   }
 
   function configureAi(next: DirectorSettings | null) {
@@ -284,16 +421,27 @@ export function Studio() {
           load.current = null;
           setPendingGlb(null);
           if (signal.aborted || failure || !info) {
-            reject(signal.aborted ? signal.reason : new Error(failure?.message ?? "未检测到有效的模型。"));
+            reject(
+              signal.aborted
+                ? signal.reason
+                : new Error(failure?.message ?? "未检测到有效的模型。"),
+            );
             return false;
           }
-          setAsset({ glb, download: URL.createObjectURL(glb), bones: info.bones });
+          setAsset({
+            glb,
+            download: URL.createObjectURL(glb),
+            bones: info.bones,
+          });
           resolve();
           return true;
         }
         const request = { blob: glb, settle };
         const cancel = () => settle();
-        const timer = setTimeout(() => settle(undefined, { message: "模型加载超时，请重试。" }), 60_000);
+        const timer = setTimeout(
+          () => settle(undefined, { message: "模型加载超时，请重试。" }),
+          60_000,
+        );
         signal.addEventListener("abort", cancel, { once: true });
         load.current = request;
         setPendingGlb(glb);
@@ -301,7 +449,10 @@ export function Studio() {
       setStatus("定妆完成 · 已绑定骨骼");
     } catch (cause) {
       setStatus(signal.aborted ? "已停止定妆" : "定妆暂停");
-      if (!signal.aborted) setModelError(cause instanceof Error ? cause.message : "定妆失败，请重试。");
+      if (!signal.aborted)
+        setModelError(
+          cause instanceof Error ? cause.message : "定妆失败，请重试。",
+        );
     } finally {
       run.current = null;
       setStartedAt(null);
@@ -314,10 +465,11 @@ export function Studio() {
     selectFile(event.dataTransfer.files[0]);
   }
 
-  function chooseActor(next: Actor) {
+  function chooseActor(next: Actor, event: MouseEvent<HTMLElement>) {
     setActor(next);
     setPreviewUpload(false);
     setPlaying(true);
+    schedulePreviewJump(event.detail === 0);
   }
 
   const stageGlb = pendingGlb ?? asset?.glb;
@@ -330,75 +482,89 @@ export function Studio() {
       onValueChange={(next) => {
         if (next) setView(next);
       }}
-      orientation="vertical"
+      orientation={compactNav ? "horizontal" : "vertical"}
     >
       <aside className="sidebar">
-        <Link className="brand" href="/" aria-label="啪叽 Paji 首页">
-          <span className="brand-mark">
-            <Clapperboard size={25} strokeWidth={2.5} />
-          </span>
-          <span>
-            啪叽
-            <span className="brand-en">
-              paji<span>®</span>
+        <div className="sidebar-brand-group">
+          <Link className="brand" href="/" aria-label="啪叽 Paji 首页">
+            <span className="brand-mark">
+              <Clapperboard size={20} strokeWidth={2.4} />
             </span>
-          </span>
-        </Link>
-        <p className="sidebar-label">你的脑洞，专属片场</p>
+            <span className="brand-wordmark">
+              啪叽
+              <span className="brand-en">
+                paji<span>®</span>
+              </span>
+            </span>
+          </Link>
+          <p className="sidebar-label">你的脑洞，专属片场</p>
+        </div>
+
         <TabsList className="sidebar-nav" aria-label="主导航">
           <TabsTab value="studio" className="nav-item">
-            <Clapperboard size={19} />
-            创作片场
-            <Sparkles size={15} className="nav-sparkle" />
+            <Clapperboard size={17} />
+            <span>创作片场</span>
+            <Sparkles size={14} className="nav-sparkle" />
           </TabsTab>
           <TabsTab value="works" className="nav-item" disabled={busy}>
-            <FolderHeart size={19} />
-            我的作品<span className="nav-count">0</span>
+            <FolderHeart size={17} />
+            <span>我的作品</span>
+            <span className="nav-count">0</span>
           </TabsTab>
         </TabsList>
-        <div className="sidebar-note">
-          <span className="note-star">✦</span>
+
+        <div className="sidebar-note" aria-hidden="true">
           <span className="note-tape" />
+          <span className="note-star">✦</span>
           <p>
-            一点脑洞，
-            <br />
-            一吨<span>可爱。</span>
+            <span className="note-line">一点脑洞，</span>
+            <span className="note-line">
+              一吨<em>可爱。</em>
+            </span>
           </p>
           <div className="note-doodle">
-            <Heart size={22} />
+            <Heart size={15} />
             <span>MAKE IT FUN!</span>
           </div>
         </div>
+
         <div className="sidebar-bottom">
           <span className="local-dot" />
           <div>
             <strong>灵感就存在这里</strong>
             <p>无须登录，自由创作</p>
           </div>
-          <Heart size={16} />
+          <Heart size={14} />
         </div>
       </aside>
 
       <div className="main-shell">
         <header className="topbar">
           <div className="breadcrumb">
-            <span>我的工作台</span>
-            <ChevronRight size={14} />
-            <strong>{view === "studio" ? "创作片场" : "我的作品"}</strong>
+            <span className="breadcrumb-root">我的工作台</span>
+            <ChevronRight size={14} className="breadcrumb-sep" />
+            <strong className="breadcrumb-current">
+              {view === "studio" ? "创作片场" : "我的作品"}
+            </strong>
+            <span className="beta-tag">BETA</span>
           </div>
           <div className="topbar-actions">
-            <span className="beta-tag">BETA</span>
-            <AiSettings value={ai} disabled={busy} onChange={configureAi} />
+            <AiSettings
+              value={ai}
+              disabled={busy}
+              needsConfig={hasUpload && !ai}
+              onChange={configureAi}
+              open={aiDialogOpen}
+              onOpenChange={handleAiOpenChange}
+            />
             <Guide />
-            <div className="profile-mark" aria-label="本地创作者">
-              <span>p.</span>
-            </div>
           </div>
         </header>
+
         <main id="main-content">
           <TabsPanel value="studio" className="workspace-panel">
             <div className="page-heading">
-              <div>
+              <div className="page-heading-copy">
                 <div className="eyebrow">
                   <span className="pink-dot" /> WELCOME TO YOUR LITTLE STUDIO
                 </div>
@@ -410,35 +576,70 @@ export function Studio() {
                       <path d="M3 7Q75 0 157 6" />
                     </svg>
                   </span>
-                  <span className="heading-spark">✦</span>
+                  <span className="heading-spark" aria-hidden="true">
+                    ✦
+                  </span>
                 </h1>
                 <p>把你的角色捏成会动的表情包。可爱，根本藏不住。</p>
               </div>
-              <div className="heading-sticker">
-                <span>今日宜</span>
-                <strong>放飞脑洞</strong>
-                <Sparkles size={17} />
+              <div className="heading-sticker" aria-hidden="true">
+                <span className="sticker-kicker">今日宜</span>
+                <div className="sticker-body">
+                  <strong>放飞脑洞</strong>
+                  <Sparkles size={14} />
+                </div>
               </div>
             </div>
 
             <section className="workflow" aria-label="创作流程">
-              {steps.map((step, index) => (
-                <div
-                  key={step.title}
-                  className={cn("workflow-step", index === 0 && "current")}
-                  aria-current={index === 0 ? "step" : undefined}
-                >
-                  <span className="step-number">0{index + 1}</span>
-                  <step.icon size={19} />
-                  <div>
-                    <strong>{step.title}</strong>
-                    <span>{step.description}</span>
+              {steps.map((step, index) => {
+                // Honest progress: custom flow covers Act 01 (选角) and Act 02 (定妆); Act 03 is demo-only, Act 04 is upcoming
+                const isDone =
+                  (index === 0 && hasUpload) ||
+                  (index === 1 && Boolean(asset));
+                const isCurrent =
+                  (index === 0 && !hasUpload) ||
+                  (index === 1 && hasUpload && previewUpload && !asset);
+                return (
+                  <div
+                    key={step.title}
+                    className={cn(
+                      "workflow-step",
+                      isCurrent && "current",
+                      isDone && "completed",
+                      step.upcoming && "upcoming",
+                    )}
+                    aria-current={isCurrent ? "step" : undefined}
+                  >
+                    <span className="step-badge">
+                      {isDone ? (
+                        <Check size={12} strokeWidth={2.8} />
+                      ) : (
+                        <span className="step-number">0{index + 1}</span>
+                      )}
+                    </span>
+                    <span className="step-icon">
+                      <step.icon size={15} />
+                    </span>
+                    <div className="step-copy">
+                      <strong>
+                        {step.title}
+                        {step.upcoming && (
+                          <span className="step-soon-tag">筹备</span>
+                        )}
+                      </strong>
+                      <span>{step.description}</span>
+                    </div>
+                    {index < steps.length - 1 && (
+                      <ChevronRight
+                        className="step-arrow"
+                        size={14}
+                        aria-hidden="true"
+                      />
+                    )}
                   </div>
-                  {index < steps.length - 1 && (
-                    <ChevronRight className="step-arrow" size={17} />
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </section>
 
             <div className="studio-grid">
@@ -450,14 +651,24 @@ export function Studio() {
                   <div className="section-heading">
                     <div className="section-title">
                       <span className="section-icon pink">
-                        <ImagePlus size={18} />
+                        {upload ? (
+                          <Check size={16} strokeWidth={2.6} />
+                        ) : (
+                          <ImagePlus size={16} />
+                        )}
                       </span>
-                      <h2 id="casting-title">今天，谁来当主角？</h2>
+                      <h2 id="casting-title">
+                        {upload ? "演员已就位" : "今天，谁来当主角？"}
+                      </h2>
                     </div>
-                    <span className="small-label">ACT 01 / 选角</span>
+                    <span className="small-label">
+                      {upload ? "ACT 01 · 已选角" : "ACT 01 / 选角"}
+                    </span>
                   </div>
                   <p className="section-description">
-                    一张立绘、一个头像，甚至是随手画的小家伙。
+                    {upload
+                      ? "可在「片场偷看」预览并开始 AI 定妆，或随时替换角色原图。"
+                      : "一张立绘、一个头像，甚至是随手画的小家伙。"}
                   </p>
                   <input
                     ref={input}
@@ -485,12 +696,12 @@ export function Studio() {
                     onDrop={onDrop}
                   >
                     {upload ? (
-                      <>
+                      <div className="uploaded-card">
                         <div className="uploaded-image">
                           <Image
                             unoptimized
                             width={108}
-                            height={112}
+                            height={108}
                             src={upload.url}
                             alt="已选择的角色原图"
                             onError={() => {
@@ -499,26 +710,40 @@ export function Studio() {
                               setPreviewUpload(false);
                             }}
                           />
-                          <span>
-                            <Check size={12} />
-                            演员已就位
+                          <span className="uploaded-badge">
+                            <Check size={11} strokeWidth={2.8} />
+                            本地原图
                           </span>
                         </div>
-                        <strong className="uploaded-name">{upload.name}</strong>
-                        <p>确认定妆前，角色图仅在本地预览。</p>
-                        {!previewUpload && (
-                          <Button className="button button-secondary" onClick={() => setPreviewUpload(true)}>
-                            <MonitorPlay size={16} /> 返回我的演员
+                        <div className="uploaded-meta">
+                          <strong className="uploaded-name" title={upload.name}>
+                            {upload.name}
+                          </strong>
+                          <span className="uploaded-size">
+                            {formatFileSize(upload.file.size)} · 本地暂存
+                          </span>
+                        </div>
+                        <div className="uploaded-actions">
+                          {!previewUpload && (
+                            <Button
+                              className="button button-secondary"
+                              onClick={(event) => {
+                                setPreviewUpload(true);
+                                schedulePreviewJump(event.detail === 0);
+                              }}
+                            >
+                              <MonitorPlay size={15} /> 返回我的演员
+                            </Button>
+                          )}
+                          <Button
+                            className="button button-subtle"
+                            disabled={busy}
+                            onClick={() => input.current?.click()}
+                          >
+                            <Upload size={15} />
+                            换一位演员
                           </Button>
-                        )}
-                        <Button
-                          className="button button-primary"
-                          disabled={busy}
-                          onClick={() => input.current?.click()}
-                        >
-                          <Upload size={16} />
-                          换一位演员
-                        </Button>
+                        </div>
                         <Button
                           className="remove-upload"
                           disabled={busy}
@@ -530,15 +755,16 @@ export function Studio() {
                             setPreviewUpload(false);
                           }}
                         >
+                          <Trash2 size={13} />
                           移除图片
                         </Button>
-                      </>
+                      </div>
                     ) : (
                       <>
                         <div className="upload-art" aria-hidden="true">
                           <div className="art-back" />
                           <div className="art-front">
-                            <ImagePlus size={34} strokeWidth={1.6} />
+                            <ImagePlus size={28} strokeWidth={1.6} />
                             <span />
                           </div>
                           <span className="art-spark">✧</span>
@@ -551,15 +777,15 @@ export function Studio() {
                         </h3>
                         <p>有点呆也没关系，戏精都是天生的。</p>
                         <Button
-                          className="button button-primary"
+                          className="button button-primary upload-cta"
                           onClick={() => input.current?.click()}
                         >
-                          <Plus size={18} />
+                          <Plus size={17} />
                           选择角色图片
-                          <ArrowUpRight size={16} />
+                          <ArrowUpRight size={15} />
                         </Button>
                         <span className="upload-formats">
-                          PNG / JPG / WebP<span>·</span>最大 10 MiB
+                          支持 PNG / JPG / WebP · 最大 10 MiB
                         </span>
                       </>
                     )}
@@ -568,14 +794,14 @@ export function Studio() {
                     {error ? (
                       <p className="error-message">
                         <Info size={14} />
-                        {error}
+                        <span>{error}</span>
                       </p>
                     ) : (
                       <p>
-                        <span className="tiny-lock">
+                        <span className="tiny-lock" aria-hidden="true">
                           <Layers size={13} />
                         </span>
-                        选择图片不会上传；开始 AI 定妆前会征求你的同意。
+                        <span>选择图片不会上传；开始 AI 定妆前会征求你的同意。</span>
                       </p>
                     )}
                   </div>
@@ -587,9 +813,20 @@ export function Studio() {
                 >
                   <div className="samples-heading">
                     <h2 id="samples-title">没带演员？先和 TA 们玩玩</h2>
-                    <span>
-                      免上传，直接体验 <ArrowDown size={13} />
-                    </span>
+                    {compactNav ? (
+                      <Button
+                        type="button"
+                        className="samples-jump"
+                        onClick={(event) => {
+                          setPreviewUpload(false);
+                          schedulePreviewJump(event.detail === 0);
+                        }}
+                      >
+                        去舞台试戏 <ArrowDown size={13} />
+                      </Button>
+                    ) : (
+                      <span className="samples-hint">免上传，点选即刻试戏</span>
+                    )}
                   </div>
                   <div className="sample-grid">
                     {actors.map((item) => (
@@ -602,13 +839,13 @@ export function Studio() {
                         )}
                         aria-pressed={actor === item.id && !previewUpload}
                         disabled={busy}
-                        onClick={() => chooseActor(item.id)}
+                        onClick={(event) => chooseActor(item.id, event)}
                       >
                         <span className="sample-illustration">
                           <Mascot actor={item.id} miniature playing={false} />
                           <span className="sample-tag">{item.tag}</span>
-                          <span className="sample-check">
-                            <Check size={12} />
+                          <span className="sample-check" aria-hidden="true">
+                            <Check size={12} strokeWidth={2.8} />
                           </span>
                         </span>
                         <span className="sample-info">
@@ -619,11 +856,12 @@ export function Studio() {
                     ))}
                   </div>
                 </section>
+
                 <div className="director-note">
-                  <span className="director-avatar">
-                    <Clapperboard size={21} />
+                  <span className="director-avatar" aria-hidden="true">
+                    <Clapperboard size={18} />
                   </span>
-                  <div>
+                  <div className="director-note-copy">
                     <strong>
                       导演的小声提醒<span>DIRECTOR’S NOTE</span>
                     </strong>
@@ -631,72 +869,125 @@ export function Studio() {
                       角色越简单，演技越放飞。毕竟，谁能拒绝一只会发疯的团子呢？
                     </p>
                   </div>
-                  <Sparkles size={20} />
+                  <Sparkles
+                    size={17}
+                    className="director-sparkle"
+                    aria-hidden="true"
+                  />
                 </div>
               </div>
 
               <section
+                ref={previewPanelRef}
                 className="panel preview-panel"
                 aria-labelledby="preview-title"
               >
                 <div className="section-heading">
                   <div className="section-title">
                     <span className="section-icon blue">
-                      <MonitorPlay size={18} />
+                      <MonitorPlay size={16} />
                     </span>
-                    <h2 id="preview-title">片场偷看</h2>
+                    <h2
+                      id="preview-title"
+                      ref={previewHeadingRef}
+                      tabIndex={-1}
+                      className="preview-heading-anchor"
+                    >
+                      片场偷看
+                    </h2>
                   </div>
-                  <span className="live-tag">
-                    <span />
-                    {showModel ? (asset ? "已绑定骨骼" : "加载模型中") : previewUpload ? "本地预览" : "示例预览"}
+                  <span
+                    className={cn(
+                      "live-tag",
+                      showModel && asset && "live-tag-ready",
+                      busy && "live-tag-busy",
+                    )}
+                  >
+                    <span aria-hidden="true" />
+                    {showModel
+                      ? asset
+                        ? "已绑定骨骼"
+                        : "加载模型中"
+                      : previewUpload
+                        ? "本地预览"
+                        : "示例预览"}
                   </span>
                 </div>
+
                 <div
                   className={cn(
                     "preview-stage",
                     previewUpload && "image-stage",
+                    showModel && "stage-3d",
                   )}
                 >
                   <div className="stage-grid" />
-                  <span className="stage-corner corner-tl" />
-                  <span className="stage-corner corner-tr" />
-                  <span className="stage-corner corner-bl" />
-                  <span className="stage-corner corner-br" />
+                  <span className="stage-corner corner-tl" aria-hidden="true" />
+                  <span className="stage-corner corner-tr" aria-hidden="true" />
+                  <span className="stage-corner corner-bl" aria-hidden="true" />
+                  <span className="stage-corner corner-br" aria-hidden="true" />
                   <span className="stage-label">
-                    {showModel ? "PAJI / 3D STAGE" : previewUpload ? "ORIGINAL IMAGE" : "PAJI / LITTLE THEATER"}
+                    {showModel
+                      ? "PAJI / 3D STAGE"
+                      : previewUpload
+                        ? "ORIGINAL IMAGE"
+                        : "PAJI / LITTLE THEATER"}
                   </span>
+
                   {showModel && stageGlb ? (
-                    <ModelStage
-                      blob={stageGlb}
-                      rigged
-                      skeleton={skeleton}
-                      visible={view === 'studio'}
-                      onInfo={(blob, info) => load.current?.blob === blob ? load.current.settle(info) : asset?.glb === blob}
-                      onError={(blob, failure) => { if (load.current?.blob === blob) load.current.settle(undefined, failure); }}
-                    />
+                    <>
+                      <ModelStage
+                        blob={stageGlb}
+                        rigged
+                        skeleton={skeleton}
+                        visible={view === "studio"}
+                        onInfo={(blob, info) =>
+                          load.current?.blob === blob
+                            ? load.current.settle(info)
+                            : asset?.glb === blob
+                        }
+                        onError={(blob, failure) => {
+                          if (load.current?.blob === blob)
+                            load.current.settle(undefined, failure);
+                        }}
+                      />
+                      <span className="stage-orbit-hint">
+                        拖动旋转 · 滚轮缩放
+                      </span>
+                    </>
                   ) : previewUpload && upload ? (
                     <div className="original-preview">
-                      <Image
-                        unoptimized
-                        width={400}
-                        height={400}
-                        src={upload.url}
-                        alt="上传角色的本地预览"
-                      />
-                      <span>原图预览 · 确认后开始 AI 定妆</span>
+                      <div className="original-frame">
+                        <Image
+                          unoptimized
+                          width={400}
+                          height={400}
+                          src={upload.url}
+                          alt="上传角色的本地预览"
+                        />
+                      </div>
+                      <span className="original-caption">
+                        原图预览 · 确认后开始 AI 定妆
+                      </span>
                     </div>
                   ) : (
                     <>
-                      <span className="stage-sticker sticker-happy">
+                      <span
+                        className="stage-sticker sticker-happy"
+                        aria-hidden="true"
+                      >
                         {mood === "speechless"
                           ? "…"
                           : mood === "crazy"
                             ? "啊啊啊！"
                             : "好耶！"}
                       </span>
-                      <span className="stage-spark spark-one">✦</span>
-                      <span className="stage-spark spark-two">✧</span>
-                      <span className="stage-swirl" />
+                      <span className="stage-spark spark-one" aria-hidden="true">
+                        ✦
+                      </span>
+                      <span className="stage-spark spark-two" aria-hidden="true">
+                        ✧
+                      </span>
                       <Mascot
                         actor={actor}
                         mood={mood}
@@ -708,54 +999,163 @@ export function Studio() {
                           {moods.find((item) => item.id === mood)?.caption}
                         </span>
                       )}
-                      <span className="stage-floor-label">100% 可爱浓度</span>
                       <Button
                         className="icon-button play-toggle"
                         onClick={() => setPlaying(!playing)}
                         aria-label={playing ? "暂停预览动画" : "播放预览动画"}
                       >
                         {playing ? (
-                          <Pause size={15} fill="currentColor" />
+                          <Pause size={14} fill="currentColor" />
                         ) : (
-                          <Play size={15} fill="currentColor" />
+                          <Play size={14} fill="currentColor" />
                         )}
                       </Button>
                     </>
                   )}
                 </div>
+
                 <div className="preview-controls">
                   <div className="preview-actor-row">
                     <div>
                       <strong>
                         {previewUpload ? "你的专属演员" : selectedActor.name}
-                        <span>{previewUpload ? "ORIGINAL" : "DEMO ACTOR"}</span>
+                        <span>
+                          {showModel && asset
+                            ? "3D RIGGED"
+                            : previewUpload
+                              ? "ORIGINAL"
+                              : "DEMO ACTOR"}
+                        </span>
                       </strong>
                       <p>
-                        {previewUpload
-                          ? "先看看角色图，期待 TA 的第一次开拍。"
-                          : "小小一只，情绪倒是不少。"}
+                        {showModel && asset
+                          ? `已完成 3D 建模与骨骼绑定（${asset.bones} 根骨骼），可拖动观察或下载 GLB。`
+                          : previewUpload
+                            ? ai
+                              ? `已连接 ${ai.model}，勾选下方确认后即可开始 3D 定妆。`
+                              : "已载入本地原图，配置 AI 导演后即可生成 3D 演员。"
+                            : "小小一只，情绪倒是不少。"}
                       </p>
                     </div>
-                    <span className="actor-heart">
-                      <Heart size={19} />
-                    </span>
                   </div>
+
                   {previewUpload ? (
                     <div className="model-controls">
-                      {!asset && !ai && <p>请先在页面顶部的「AI 设置」选择服务和模型。</p>}
-                      {!asset && ai && <label><input type="checkbox" checked={consent} disabled={busy} onChange={(event) => setConsent(event.target.checked)} /> 我有权使用这张图片，并同意发送给 {ai.baseUrl ? new URL(ai.baseUrl).host : providers[ai.provider].label} 分析。模型和骨骼在本地生成。</label>}
-                      {!busy && !asset && <Button className="button button-primary" disabled={!consent || !ai || supported !== true} onClick={() => void generateModel()}>
-                        <WandSparkles size={16} /> {status ? "继续定妆" : "生成模型并绑定骨骼"}
-                      </Button>}
-                      {supported === null && <p>正在检查浏览器是否支持 3D 定妆…</p>}
-                      {supported === false && <p className="error-message">当前浏览器不支持 WebAssembly JSPI，请使用最新版 Chrome 或 Safari 27+。</p>}
-                      {startedAt !== null ? <>
-                        <DressingProgress startedAt={startedAt} status={status} />
-                        <Button className="button button-secondary" onClick={() => run.current?.abort()}>停止定妆</Button>
-                      </> : status && <p role="status">{status}</p>}
-                      {modelError && <p role="alert" className="error-message">{modelError}</p>}
-                      {asset && <label><input type="checkbox" checked={skeleton} onChange={(event) => setSkeleton(event.target.checked)} /> 显示骨骼（{asset.bones} 根）</label>}
-                      {asset && <a className="button button-secondary" href={asset.download} download="paji-rigged.glb">下载 GLB <ArrowDown size={15} /></a>}
+                      {!asset && !ai && (
+                        <div className="ai-setup-callout">
+                          <div className="ai-setup-callout-body">
+                            <Settings size={15} aria-hidden="true" />
+                            <p>尚未配置 AI 导演，请先选择服务和模型。</p>
+                          </div>
+                          <Button
+                            className="button button-primary ai-setup-shortcut"
+                            disabled={busy}
+                            onClick={(event) => {
+                              aiReturnFocusRef.current = event.currentTarget;
+                              setAiDialogOpen(true);
+                            }}
+                          >
+                            打开 AI 设置
+                          </Button>
+                        </div>
+                      )}
+                      {!asset && ai && (
+                        <label
+                          className={cn(
+                            "consent-card",
+                            consent && "is-checked",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={consent}
+                            disabled={busy}
+                            onChange={(event) =>
+                              setConsent(event.target.checked)
+                            }
+                          />
+                          <span>
+                            我有权使用这张图片，并同意发送给{" "}
+                            <strong>
+                              {ai.baseUrl
+                                ? new URL(ai.baseUrl).host
+                                : providers[ai.provider].label}
+                            </strong>{" "}
+                            分析。模型和骨骼在本地生成。
+                          </span>
+                        </label>
+                      )}
+                      {!busy && !asset && (
+                        <Button
+                          className="button button-primary model-submit-btn"
+                          disabled={!consent || !ai || supported !== true}
+                          onClick={() => void generateModel()}
+                        >
+                          <WandSparkles size={16} />{" "}
+                          {status ? "继续定妆" : "生成模型并绑定骨骼"}
+                        </Button>
+                      )}
+                      {supported === null && (
+                        <p className="model-meta-note">
+                          正在检查浏览器是否支持 3D 定妆…
+                        </p>
+                      )}
+                      {supported === false && (
+                        <p className="form-alert">
+                          <Info size={15} aria-hidden="true" />
+                          <span>
+                            当前浏览器不支持 WebAssembly JSPI，请使用最新版 Chrome 或 Safari 27+。
+                          </span>
+                        </p>
+                      )}
+                      {startedAt !== null ? (
+                        <div className="model-busy-stack">
+                          <DressingProgress
+                            startedAt={startedAt}
+                            status={status}
+                          />
+                          <Button
+                            className="button button-secondary model-stop-btn"
+                            onClick={() => run.current?.abort()}
+                          >
+                            停止定妆
+                          </Button>
+                        </div>
+                      ) : (
+                        status && (
+                          <p role="status" className="model-status-pill">
+                            <ShieldCheck size={14} aria-hidden="true" />
+                            <span>{status}</span>
+                          </p>
+                        )
+                      )}
+                      {modelError && (
+                        <p role="alert" className="form-alert">
+                          <Info size={15} aria-hidden="true" />
+                          <span>{modelError}</span>
+                        </p>
+                      )}
+                      {asset && (
+                        <div className="asset-ready-bar">
+                          <label className="skeleton-toggle">
+                            <input
+                              type="checkbox"
+                              checked={skeleton}
+                              onChange={(event) =>
+                                setSkeleton(event.target.checked)
+                              }
+                            />
+                            <span>显示骨骼（{asset.bones} 根）</span>
+                          </label>
+                          <a
+                            className="button button-secondary"
+                            href={asset.download}
+                            download="paji-rigged.glb"
+                          >
+                            下载 GLB <ArrowDown size={15} />
+                          </a>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <>
@@ -767,7 +1167,7 @@ export function Studio() {
                       >
                         <div className="control-label">
                           <span>给 TA 一点小情绪</span>
-                          <MousePointer2 size={13} />
+                          <MousePointer2 size={13} aria-hidden="true" />
                         </div>
                         <TabsList
                           className="mood-tabs"
@@ -806,7 +1206,7 @@ export function Studio() {
                       >
                         <div className="control-label">
                           <span>戏精指数</span>
-                          <strong>
+                          <strong className="intensity-readout">
                             {intensity}
                             <span> / 11</span>
                           </strong>
@@ -841,8 +1241,9 @@ export function Studio() {
                     </>
                   )}
                 </div>
+
                 <div className="preview-footer">
-                  <WandSparkles size={14} />
+                  <WandSparkles size={14} aria-hidden="true" />
                   <span>
                     {previewUpload
                       ? "定妆支持 GLB 下载；GIF 导出仍在筹备中。"
@@ -851,10 +1252,13 @@ export function Studio() {
                 </div>
               </section>
             </div>
+
             <footer className="workspace-footer">
               <span>
                 MADE FOR YOUR WILD IMAGINATION
-                <span className="footer-star">✦</span>
+                <span className="footer-star" aria-hidden="true">
+                  ✦
+                </span>
               </span>
               <span>一点灵感，无限种可能。</span>
             </footer>
@@ -862,7 +1266,7 @@ export function Studio() {
 
           <TabsPanel value="works" className="workspace-panel">
             <div className="page-heading">
-              <div>
+              <div className="page-heading-copy">
                 <div className="eyebrow">
                   <span className="pink-dot" /> YOUR LITTLE COLLECTION
                 </div>
@@ -873,15 +1277,20 @@ export function Studio() {
               </div>
             </div>
             <section className="panel empty-portfolio">
-              <span className="empty-icon">
-                <FolderHeart size={40} strokeWidth={1.4} />
-              </span>
+              <div className="empty-emblem" aria-hidden="true">
+                <span className="empty-card-back" />
+                <span className="empty-icon">
+                  <FolderHeart size={36} strokeWidth={1.6} />
+                </span>
+              </div>
               <h2>你的第一部作品，还在脑洞里</h2>
               <p>
-                这里将收集你导出的表情包。当前可先在片场体验内置演员，
-                <br />
-                作品保存和 GIF 导出仍在筹备中。
+                这里将收集你导出的表情包。当前可先在片场体验内置演员或为角色定妆，作品保存和 GIF 导出仍在筹备中。
               </p>
+              <div className="empty-roadmap" aria-label="筹备中的能力">
+                <span>透明底 GIF 导出 · 筹备中</span>
+                <span>本地作品档案 · 筹备中</span>
+              </div>
               <Button
                 className="button button-primary"
                 onClick={() => setView("studio")}
