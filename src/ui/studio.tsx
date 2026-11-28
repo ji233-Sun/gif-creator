@@ -70,6 +70,10 @@ const ModelStage = dynamic(
   () => import("@/stage/model-stage").then((m) => m.ModelStage),
   { ssr: false },
 );
+const PortraitWorkspace = dynamic(
+  () => import("./portrait-workspace").then((m) => m.PortraitWorkspace),
+  { ssr: false },
+);
 
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -137,14 +141,9 @@ const moods: { id: Mood; label: string; caption: string }[] = [
 ];
 const steps = [
   { icon: ImagePlus, title: "选角", description: "带上你的角色" },
-  { icon: Box, title: "定妆", description: "生成 3D 绑骨模型" },
-  { icon: Clapperboard, title: "开拍", description: "示例情绪可试玩" },
-  {
-    icon: Film,
-    title: "杀青",
-    description: "GIF 导出 · 筹备中",
-    upcoming: true,
-  },
+  { icon: Box, title: "定妆", description: "保留原画 · 本机抠图" },
+  { icon: Clapperboard, title: "开拍", description: "用指令导演演出" },
+  { icon: Film, title: "杀青", description: "透明 GIF 导出" },
 ];
 
 function Guide() {
@@ -185,7 +184,7 @@ function Guide() {
         <div className="notice">
           <Info size={16} />
           <p>
-            上传图片后可请 AI 导演生成模型并绑定骨骼；内置演员可体验示例情绪和动效。自有角色演戏与 GIF 导出仍在筹备中。
+            上传图片后先在本机定妆，再输入想演的动作。确认发送透明图和指令后，AI 导演会编排演出；你可以预览并导出透明 GIF。可旋转的粗略模型另有「实验性 3D」入口。
           </p>
         </div>
         <DialogClose className="button button-primary guide-confirm">
@@ -214,9 +213,13 @@ export function Studio() {
   const [ai, setAi] = useState<DirectorSettings | null>(null);
   const [aiDialogOpen, setAiDialogOpen] = useState(false);
   const [startedAt, setStartedAt] = useState<number | null>(null);
-  const busy = startedAt !== null;
+  const [portraitBusy, setPortraitBusy] = useState(false);
+  const portraitBusyRef = useRef(false);
+  const busy = startedAt !== null || portraitBusy;
   const [asset, setAsset] = useState<ReadyAsset | null>(null);
   const [pendingGlb, setPendingGlb] = useState<Blob | null>(null);
+  const [actorMode, setActorMode] = useState<"portrait" | "volume">("portrait");
+  const [portraitProgress, setPortraitProgress] = useState<"ready" | "performed" | "exported" | null>(null);
   const [skeleton, setSkeleton] = useState(true);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -284,7 +287,7 @@ export function Studio() {
   }, [previewFocusNonce]);
 
   useEffect(() => {
-    if (!hasUpload) return;
+    if (!hasUpload || actorMode !== 'volume') return;
     let active = true;
     void DirectorRuntime.supported()
       .catch(() => false)
@@ -294,7 +297,7 @@ export function Studio() {
     return () => {
       active = false;
     };
-  }, [hasUpload]);
+  }, [hasUpload, actorMode]);
 
   useEffect(() => {
     return () => {
@@ -343,12 +346,14 @@ export function Studio() {
     setConsent(false);
     setAsset(null);
     setPendingGlb(null);
+    setActorMode("portrait");
+    setPortraitProgress(null);
     setStatus("");
     setModelError("");
   }
 
   async function selectFile(file?: File) {
-    if (!file || run.current) return;
+    if (!file || run.current || portraitBusyRef.current) return;
     const version = ++selection.current;
     if (!IMAGE_TYPES.some((type) => type === file.type)) {
       setError("这位演员的档案格式不支持，请选择 PNG、JPG 或 WebP 图片。");
@@ -378,7 +383,7 @@ export function Studio() {
         setError("图片无法读取，请换一张有效的角色图。");
       return;
     }
-    if (version !== selection.current || run.current) return;
+    if (version !== selection.current || run.current || portraitBusyRef.current) return;
     resetModel();
     setError("");
     setUpload({ url: URL.createObjectURL(file), name: file.name, file });
@@ -466,6 +471,7 @@ export function Studio() {
   }
 
   function chooseActor(next: Actor, event: MouseEvent<HTMLElement>) {
+    if (run.current || portraitBusyRef.current) return;
     setActor(next);
     setPreviewUpload(false);
     setPlaying(true);
@@ -473,7 +479,8 @@ export function Studio() {
   }
 
   const stageGlb = pendingGlb ?? asset?.glb;
-  const showModel = previewUpload && Boolean(stageGlb);
+  const portraitMode = actorMode === "portrait";
+  const showModel = previewUpload && !portraitMode && Boolean(stageGlb);
 
   return (
     <Tabs
@@ -552,7 +559,7 @@ export function Studio() {
             <AiSettings
               value={ai}
               disabled={busy}
-              needsConfig={hasUpload && !ai}
+              needsConfig={hasUpload && !portraitMode && !ai}
               onChange={configureAi}
               open={aiDialogOpen}
               onOpenChange={handleAiOpenChange}
@@ -593,13 +600,14 @@ export function Studio() {
 
             <section className="workflow" aria-label="创作流程">
               {steps.map((step, index) => {
-                // Honest progress: custom flow covers Act 01 (选角) and Act 02 (定妆); Act 03 is demo-only, Act 04 is upcoming
-                const isDone =
-                  (index === 0 && hasUpload) ||
-                  (index === 1 && Boolean(asset));
-                const isCurrent =
-                  (index === 0 && !hasUpload) ||
-                  (index === 1 && hasUpload && previewUpload && !asset);
+                const dressed = portraitMode ? portraitProgress !== null : Boolean(asset);
+                const performed = portraitMode && (portraitProgress === "performed" || portraitProgress === "exported");
+                const exported = portraitMode && portraitProgress === "exported";
+                const isDone = (index === 0 && hasUpload) || (index === 1 && dressed) ||
+                  (index === 2 && performed) || (index === 3 && exported);
+                const isCurrent = (index === 0 && !hasUpload) || (previewUpload && !exported && (
+                  (index === 1 && !dressed) || (index === 2 && portraitMode && dressed && !performed) || (index === 3 && performed)
+                ));
                 return (
                   <div
                     key={step.title}
@@ -607,7 +615,6 @@ export function Studio() {
                       "workflow-step",
                       isCurrent && "current",
                       isDone && "completed",
-                      step.upcoming && "upcoming",
                     )}
                     aria-current={isCurrent ? "step" : undefined}
                   >
@@ -622,12 +629,7 @@ export function Studio() {
                       <step.icon size={15} />
                     </span>
                     <div className="step-copy">
-                      <strong>
-                        {step.title}
-                        {step.upcoming && (
-                          <span className="step-soon-tag">筹备</span>
-                        )}
-                      </strong>
+                      <strong>{step.title}</strong>
                       <span>{step.description}</span>
                     </div>
                     {index < steps.length - 1 && (
@@ -667,7 +669,7 @@ export function Studio() {
                   </div>
                   <p className="section-description">
                     {upload
-                      ? "可在「片场偷看」预览并开始 AI 定妆，或随时替换角色原图。"
+                      ? "可在「片场偷看」保留原画、输入开拍指令并导出 GIF，或替换原图。"
                       : "一张立绘、一个头像，甚至是随手画的小家伙。"}
                   </p>
                   <input
@@ -801,7 +803,7 @@ export function Studio() {
                         <span className="tiny-lock" aria-hidden="true">
                           <Layers size={13} />
                         </span>
-                        <span>选择图片不会上传；开始 AI 定妆前会征求你的同意。</span>
+                        <span>选择图片不会上传；请 AI 导演定妆或开拍前会征求你的同意。</span>
                       </p>
                     )}
                   </div>
@@ -899,7 +901,7 @@ export function Studio() {
                   <span
                     className={cn(
                       "live-tag",
-                      showModel && asset && "live-tag-ready",
+                      ((showModel && asset) || (previewUpload && portraitMode && portraitProgress)) && "live-tag-ready",
                       busy && "live-tag-busy",
                     )}
                   >
@@ -909,11 +911,26 @@ export function Studio() {
                         ? "已绑定骨骼"
                         : "加载模型中"
                       : previewUpload
-                        ? "本地预览"
+                        ? portraitMode && portraitProgress ? "原画就绪" : "本地预览"
                         : "示例预览"}
                   </span>
                 </div>
 
+                {previewUpload && upload && (
+                  <div className="portrait-mode-choice" role="group" aria-label="角色生成方式">
+                    <Button className="button button-secondary" aria-pressed={portraitMode} disabled={busy}
+                      onClick={() => setActorMode("portrait")}>原画开拍</Button>
+                    <Button className="button button-secondary" aria-pressed={!portraitMode} disabled={busy}
+                      onClick={() => setActorMode("volume")}>实验性 3D</Button>
+                  </div>
+                )}
+                {upload && <div key={upload.url} hidden={!previewUpload || !portraitMode}>
+                  <PortraitWorkspace file={upload.file} url={upload.url} ai={ai}
+                    onOpenAi={button => { aiReturnFocusRef.current = button; setAiDialogOpen(true); }}
+                    visible={view === "studio" && previewUpload && portraitMode} onProgress={setPortraitProgress}
+                    onBusy={next => { portraitBusyRef.current = next; setPortraitBusy(next); }} />
+                </div>}
+                {!(previewUpload && upload && portraitMode) && <>
                 <div
                   className={cn(
                     "preview-stage",
@@ -1246,10 +1263,11 @@ export function Studio() {
                   <WandSparkles size={14} aria-hidden="true" />
                   <span>
                     {previewUpload
-                      ? "定妆支持 GLB 下载；GIF 导出仍在筹备中。"
+                      ? "实验性 3D 可下载 GLB；需要保真 GIF 时请切换到「原画开拍」。"
                       : "这是示例动效，你的角色会有自己的戏。"}
                   </span>
                 </div>
+                </>}
               </section>
             </div>
 
@@ -1285,10 +1303,9 @@ export function Studio() {
               </div>
               <h2>你的第一部作品，还在脑洞里</h2>
               <p>
-                这里将收集你导出的表情包。当前可先在片场体验内置演员或为角色定妆，作品保存和 GIF 导出仍在筹备中。
+                透明 GIF 可在片场直接下载到本机。作品档案尚未接通，不会自动保存。
               </p>
               <div className="empty-roadmap" aria-label="筹备中的能力">
-                <span>透明底 GIF 导出 · 筹备中</span>
                 <span>本地作品档案 · 筹备中</span>
               </div>
               <Button

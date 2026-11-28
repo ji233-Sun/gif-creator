@@ -17,8 +17,8 @@ const origin = 'http://localhost:3000';
 const plan = { name: '红色演员', parts: [{ shape: 'sphere', color: '#EE3344', position: [0, 1, 0], size: [1, 2, 1], joint: 'body' }] };
 const makeRuntime = () => new DirectorRuntime({ provider: 'openai-responses', model: 'gpt-5-mini', key: 'test-only' });
 
-function chatStream(args: unknown) {
-  const delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'actor-call', type: 'function', function: { name: 'design_actor', arguments: JSON.stringify(args) } }] };
+function chatStream(args: unknown, name = 'design_actor') {
+  const delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'actor-call', type: 'function', function: { name, arguments: JSON.stringify(args) } }] };
   const chunk = (delta: unknown, finish_reason: string | null) => `data: ${JSON.stringify({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'director', choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
   return new Response(chunk(delta, null) + chunk({}, 'tool_calls') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
 }
@@ -52,6 +52,35 @@ it('runs the GPT Responses adapter and real fx WASM on an image with settings fr
   expect(JSON.stringify(requests[0])).toContain('data:image/png;base64,');
   expect(requests[0]).toMatchObject({ model: 'gpt-5-mini', tools: [{ name: 'design_actor' }] });
 }, 12_000);
+
+it('turns the actual user instruction into a validated take using real fx WASM and the server GIF tool', async () => {
+  const prompt = '先憋气，再用力哈一下，最后恢复';
+  const score = { title: '突然哈气', duration: 2.4, tracks: [{ channel: 'nod', keys: [{ at: .22, value: .8 }, { at: .46, value: -.42 }] }] };
+  const received: unknown[] = [];
+  vi.stubGlobal('fetch', async (input: string, init: RequestInit) => {
+    if (input === `${origin}/api/llm/chat/completions`) {
+      const body = typeof init.body === 'string' ? init.body : new TextDecoder().decode(init.body as Uint8Array);
+      return proxy(new NextRequest(input, { method: 'POST', body, headers: init.headers, signal: init.signal ?? undefined }));
+    }
+    if (input !== 'https://api.openai.com/v1/responses') throw new Error('Unexpected endpoint');
+    received.push(JSON.parse(String(init.body)));
+    return Response.json({ status: 'completed', output: [{ type: 'function_call', name: 'direct_gif', call_id: 'call_2', arguments: JSON.stringify(score) }] });
+  });
+  expect(await makeRuntime().perform(image, prompt, AbortSignal.timeout(10_000))).toEqual(score);
+  expect(received).toHaveLength(1);
+  expect(received[0]).toMatchObject({
+    tools: [{ name: 'direct_gif', parameters: { required: ['title', 'duration', 'tracks'] } }],
+    input: [{ role: 'user', content: [{ type: 'input_text', text: expect.stringContaining(prompt) }, { type: 'input_image' }] }],
+  });
+}, 12_000);
+
+it('rejects invalid GIF scores without falling back to a preset or a second call', async () => {
+  const fetcher = vi.fn(async () => chatStream({ title: '错误', duration: 1.5, tracks: [], script: 'untrusted' }, 'direct_gif'));
+  vi.stubGlobal('fetch', fetcher);
+  await expect(makeRuntime().perform(image, '甩头', AbortSignal.timeout(10_000))).rejects.toThrow('有效的动作谱');
+  await expect(makeRuntime().perform(image, ' ', AbortSignal.timeout(10_000))).rejects.toThrow('1–600');
+  expect(fetcher).toHaveBeenCalledOnce();
+});
 
 it('passes the configured Base URL only to the same-origin director proxy', async () => {
   const fetcher = vi.fn(async (_input: string, _init: RequestInit) => { void _input; void _init; return chatStream(plan); });

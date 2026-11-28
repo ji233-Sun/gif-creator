@@ -1,10 +1,9 @@
-/**
- * GIF 编码 Web Worker
- */
+import { encodePortrait, maxGifBytes, type PortraitFrames } from './encode-portrait';
 
-self.addEventListener("message", (event) => {
-  // TODO(M1): 接收帧数据，调用 gifenc 编码，postMessage 返回 Blob
-  void event;
+self.addEventListener('message', ({ data }: MessageEvent<PortraitFrames>) => {
+  try {
+    const bytes = encodePortrait(data);
+    if (bytes.length > maxGifBytes) self.postMessage({ oversized: true });
+    else self.postMessage({ bytes }, { transfer: [bytes.buffer] });
+  } catch { self.postMessage({ error: true }); }
 });
-
-export {};

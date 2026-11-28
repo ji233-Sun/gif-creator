@@ -1,12 +1,13 @@
 import { baseUrlSchema, providers, type DirectorProtocol, type DirectorProvider } from '@/director/settings';
+import { actorPlanTokenBudget } from '@/model/actor-plan';
+import { portraitTokenBudget, portraitToolName } from '@/score/portrait';
 import { requestCustomEndpoint } from './custom-ai-endpoint';
 import { HttpError } from './http';
-const name = 'design_actor';
-const tokenBudget = 4096;
+type ToolName = 'design_actor' | typeof portraitToolName;
 type Part = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'auto' | 'low' | 'high' } };
 type Options = {
   provider: DirectorProvider; model: string; baseUrl?: string; key: string; system: string; parts: Part[];
-  tool: { name: typeof name; description?: string; parameters?: Record<string, unknown> };
+  tool: { name: ToolName; description?: string; parameters?: Record<string, unknown> };
   signal: AbortSignal;
 };
 type Protocol = DirectorProtocol;
@@ -24,7 +25,8 @@ function endpoint(options: Options, protocol: Protocol): URL {
 }
 
 function request(options: Options, protocol: Protocol) {
-  const { provider, model, key, system, parts, tool: { description, parameters = { type: 'object' } } } = options;
+  const { provider, model, key, system, parts, tool: { name, description, parameters = { type: 'object' } } } = options;
+  const tokenBudget = name === portraitToolName ? portraitTokenBudget : actorPlanTokenBudget;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   const common = { model, stream: true };
   if (protocol === 'gemini') {
@@ -143,39 +145,39 @@ async function* frames(body: AsyncIterable<string>) {
   }
   if (pending.split('\n').some(line => line.trim() && !line.startsWith(':'))) throw upstreamError();
 }
-function completeArgs(callName: unknown, args: unknown, objectInput = false) {
+function completeArgs(name: ToolName, callName: unknown, args: unknown, objectInput = false) {
   const parsed: unknown = objectInput ? args : JSON.parse(text(args));
   if (callName !== name || !isObject(parsed)) throw upstreamError();
   return objectInput ? JSON.stringify(parsed) : text(args);
 }
 const chatFinished = (reason: unknown) => reason === 'tool_calls' || reason === 'stop';
-function completePayload(protocol: Protocol, payload: Fields, completedEvent = false): string {
+function completePayload(name: ToolName, protocol: Protocol, payload: Fields, completedEvent = false): string {
   if (payload.error != null) throw reportedError(payload);
   if (protocol === 'gemini') {
     const [candidate] = rows(payload.candidates);
     const [call, ...extra] = rows(object(candidate?.content).parts)
       .filter(part => isObject(part.functionCall)).map(part => object(part.functionCall));
     if (candidate?.finishReason !== 'STOP' || !call || extra.length) throw upstreamError();
-    return completeArgs(call.name, call.args, true);
+    return completeArgs(name, call.name, call.args, true);
   }
   if (protocol === 'chat') {
     const [choice] = rows(payload.choices);
     const [call, ...extra] = rows(object(choice?.message).tool_calls);
     if (!chatFinished(choice?.finish_reason) || call?.type !== 'function' || extra.length) throw upstreamError();
     const fn = object(call.function);
-    return completeArgs(fn.name, fn.arguments);
+    return completeArgs(name, fn.name, fn.arguments);
   }
   const messages = protocol === 'messages';
   if (messages ? payload.stop_reason !== 'tool_use' : payload.status !== 'completed' && !(completedEvent && payload.status == null)) throw upstreamError();
   const [call, ...extra] = rows(messages ? payload.content : payload.output).filter(item => item.type === (messages ? 'tool_use' : 'function_call'));
   if (!call || extra.length || (!messages && call.status != null && call.status !== 'completed')) throw upstreamError();
-  return completeArgs(call.name, messages ? call.input : call.arguments, messages);
+  return completeArgs(name, call.name, messages ? call.input : call.arguments, messages);
 }
 
-async function streamArgs(protocol: Exclude<Protocol, 'gemini'>, body: AsyncIterable<string>) {
+async function streamArgs(name: ToolName, protocol: Exclude<Protocol, 'gemini'>, body: AsyncIterable<string>) {
   let fnName = '', fragments = '', full: unknown, blockIndex: unknown, itemId: unknown;
   let stopped = false, blockClosed = false;
-  const fromFragments = () => completeArgs(fnName, full ?? fragments);
+  const fromFragments = () => completeArgs(name, fnName, full ?? fragments);
   for await (const { event, data } of frames(body)) {
     if (protocol === 'chat' && data === '[DONE]' && event !== 'error') return fromFragments();
     const payload: unknown = data ? JSON.parse(data) : {};
@@ -210,13 +212,13 @@ async function streamArgs(protocol: Exclude<Protocol, 'gemini'>, body: AsyncIter
         stopped = true;
       } else if (type === 'message_stop') {
         if (!stopped || !blockClosed) throw upstreamError();
-        return fragments ? completeArgs(fnName, fragments) : completeArgs(fnName, full, true);
+        return fragments ? completeArgs(name, fnName, fragments) : completeArgs(name, fnName, full, true);
       }
     } else {
       if (type === 'response.incomplete' || type === 'response.cancelled') throw upstreamError();
       const response = object(payload.response), item = object(payload.item);
       if (type === 'response.completed') {
-        if (response.output !== undefined) return completePayload(protocol, response, true);
+        if (response.output !== undefined) return completePayload(name, protocol, response, true);
         if (response.status != null && response.status !== 'completed') throw upstreamError();
         return fromFragments();
       }
@@ -241,6 +243,7 @@ async function streamArgs(protocol: Exclude<Protocol, 'gemini'>, body: AsyncIter
 
 export async function invokeDirector(options: Options): Promise<Response> {
   const { protocol } = providers[options.provider];
+  const { name } = options.tool;
   const timeout = new AbortController();
   const timer = setTimeout(() => timeout.abort(), 120_000);
   const signal = AbortSignal.any([options.signal, timeout.signal]);
@@ -270,16 +273,16 @@ export async function invokeDirector(options: Options): Promise<Response> {
       async function* replay() { yield prefix; yield* input; }
       const mime = response.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
       if (protocol !== 'gemini' && (mime === 'text/event-stream' || (!mime && !prefix.trimStart().startsWith('{')))) {
-        args = await streamArgs(protocol, replay());
+        args = await streamArgs(name, protocol, replay());
       } else {
         let json = prefix;
         for await (const chunk of input) json += chunk;
-        args = completePayload(protocol, object(JSON.parse(json)));
+        args = completePayload(name, protocol, object(JSON.parse(json)));
       }
     } finally { await input.return(undefined); }
     signal.throwIfAborted();
     const chunk = { id: 'chatcmpl-director', object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000), model: options.model };
-    const delta = { role: 'assistant', tool_calls: [{ index: 0, id: 'call_design_actor', type: 'function', function: { name, arguments: args } }] };
+    const delta = { role: 'assistant', tool_calls: [{ index: 0, id: `call_${name}`, type: 'function', function: { name, arguments: args } }] };
     const frame = (delta: object, reason: string | null) => `data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta, finish_reason: reason }] })}\n\n`;
     return new Response(frame(delta, null) + frame({}, 'tool_calls') + 'data: [DONE]\n\n', {
       headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store' },

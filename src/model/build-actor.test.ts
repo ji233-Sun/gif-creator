@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { Bone, Box3, Color, SkinnedMesh, Vector3 } from 'three';
+import { Bone, Box3, Color, MeshStandardMaterial, SkinnedMesh, Vector3 } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { z } from 'zod';
 import { hasRenderableTriangle } from '../stage/geometry';
-import { actorPlanSchema, type ActorPlan } from './actor-plan';
+import { actorPlanSchema, actorPlanToolSchema, type ActorPlan } from './actor-plan';
 import { buildActorGlb } from './build-actor';
 
 const plan: ActorPlan = {
@@ -38,16 +38,21 @@ afterEach(() => vi.unstubAllGlobals());
 it('accepts exactly the bounded plan data and emits standard JSON Schema constraints', () => {
   expect(actorPlanSchema.parse(plan)).toEqual(plan);
   const part = plan.parts[0];
-  expect(actorPlanSchema.safeParse({ name: 'Max', parts: Array(24).fill(part) }).success).toBe(true);
+  expect(actorPlanSchema.safeParse({ name: 'Max', parts: Array(40).fill(part) }).success).toBe(true);
   const json = z.toJSONSchema(actorPlanSchema, { io: 'input', target: 'draft-2020-12' });
   expect(json).toMatchObject({
     type: 'object', required: ['name', 'parts'], additionalProperties: false,
-    properties: { parts: { minItems: 1, maxItems: 24, items: {
+    properties: { parts: { minItems: 1, maxItems: 40, items: {
       additionalProperties: false,
       required: ['shape', 'color', 'position', 'size', 'joint'],
       properties: { size: { type: 'array', prefixItems: Array(3).fill({ type: 'number', minimum: 0.01, maximum: 10 }) } },
     } } },
   });
+  expect(actorPlanToolSchema.properties.parts).toMatchObject({ maxItems: 40, items: { properties: {
+    size: { minItems: 3, maxItems: 3, items: { minimum: 0.01, maximum: 10 } },
+    shape: { enum: expect.arrayContaining(['dome', 'flare', 'lock']) },
+    mirror: { type: 'boolean' }, finish: { enum: ['matte', 'gloss', 'metal'] },
+  } } });
 });
 
 it('rejects extra executable fields, malformed parts, and out-of-budget values', () => {
@@ -58,9 +63,10 @@ it('rejects extra executable fields, malformed parts, and out-of-budget values',
     { ...part, position: [0, 0, 0, 0] }, { ...part, position: [11, 0, 0] },
     { ...part, size: [0, 1, 1] }, { ...part, size: [1, 11, 1] }, { ...part, size: [1, Infinity, 1] },
     { ...part, rotation: [0, NaN, 0] }, { ...part, rotation: [0, 0, 361] },
+    { ...part, mirror: 'true' }, { ...part, finish: 'custom' },
   ];
   for (const invalid of invalidParts) expect(actorPlanSchema.safeParse({ ...plan, parts: [invalid] }).success).toBe(false);
-  for (const invalid of [{ ...plan, code: 'build()' }, { ...plan, parts: [] }, { ...plan, parts: Array(25).fill(part) }]) {
+  for (const invalid of [{ ...plan, code: 'build()' }, { ...plan, parts: [] }, { ...plan, parts: Array(41).fill(part) }]) {
     expect(actorPlanSchema.safeParse(invalid).success).toBe(false);
   }
 });
@@ -88,7 +94,7 @@ it('exports a stage-renderable GLB with full extents, colors and working semanti
     for (const bone of bones.slice(2)) expect(bone.parent).toBe(bones[1]);
 
     const { position, skinIndex, skinWeight, color } = mesh.geometry.attributes;
-    expect(position.count).toBeLessThan(1000);
+    expect(position.count).toBeLessThan(2000);
     const point = new Vector3();
     const posed = new Vector3();
     for (const part of plan.parts) {
@@ -128,6 +134,102 @@ it('exports a stage-renderable GLB with full extents, colors and working semanti
     mesh.skeleton.dispose();
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     materials.forEach(material => material.dispose());
+  }
+});
+
+it('round-trips sculpted shapes and surface finishes, and reflects a rotated part with the correct joint and winding', async () => {
+  const sculpted: ActorPlan = { name: 'Sculpted', parts: [
+    { shape: 'flare', color: '#345678', position: [0, 1, 0], size: [1.1, 1.2, 0.8], joint: 'body' },
+    { shape: 'dome', color: '#b8babd', position: [0, 2.5, 0], size: [1.6, 0.7, 1.5], joint: 'head', finish: 'metal' },
+    { shape: 'lock', color: '#1039ab', position: [0.8, 1.4, 0.2], size: [0.4, 1.2, 0.3], rotation: [15, 25, 35], joint: 'leftArm', finish: 'gloss', mirror: true },
+  ] };
+  const glb = await buildActorGlb(sculpted, new AbortController().signal);
+  const { scene } = await new GLTFLoader().parseAsync(await glb.arrayBuffer(), '');
+  const meshes: SkinnedMesh[] = [];
+  scene.traverse(node => { if (node instanceof SkinnedMesh) meshes.push(node); });
+  try {
+    expect(meshes).toHaveLength(3);
+    expect(meshes.every(mesh => hasRenderableTriangle(mesh))).toBe(true);
+    const materials = meshes.map(mesh => mesh.material as MeshStandardMaterial);
+    expect(materials.map(({ roughness, metalness }) => [roughness, metalness])).toEqual([[0.8, 0], [0.3, 0.75], [0.3, 0]]);
+
+    const hair = meshes[2];
+    const { position, normal, skinIndex } = hair.geometry.attributes;
+    const left = hair.skeleton.bones.findIndex(bone => bone.name === 'leftArm');
+    const right = hair.skeleton.bones.findIndex(bone => bone.name === 'rightArm');
+    expect(left).toBeGreaterThan(0);
+    expect(right).toBeGreaterThan(0);
+    const used = Array.from(hair.geometry.index!.array);
+    const leftIds = [...new Set(used.filter(i => skinIndex.getX(i) === left))].sort((a, b) => a - b);
+    const rightIds = [...new Set(used.filter(i => skinIndex.getX(i) === right))].sort((a, b) => a - b);
+    expect(leftIds.length).toBeGreaterThan(100);
+    expect(rightIds).toHaveLength(leftIds.length);
+    for (const [i, a] of leftIds.entries()) {
+      const b = rightIds[i];
+      for (const attr of [position, normal]) {
+        expect(attr.getX(a)).toBeCloseTo(-attr.getX(b), 6);
+        expect(attr.getY(a)).toBeCloseTo(attr.getY(b), 6);
+        expect(attr.getZ(a)).toBeCloseTo(attr.getZ(b), 6);
+      }
+    }
+    expect(used.length % 6).toBe(0);
+    const offset = used.length / 2;
+    const vertexOffset = rightIds[0] - leftIds[0];
+    for (let i = 0; i < offset; i += 3) {
+      expect(used.slice(i + offset, i + offset + 3)).toEqual([used[i], used[i + 2], used[i + 1]].map(index => index + vertexOffset));
+    }
+  } finally {
+    meshes.forEach(mesh => {
+      mesh.geometry.dispose();
+      mesh.skeleton.dispose();
+      (mesh.material as MeshStandardMaterial).dispose();
+    });
+  }
+});
+
+it('keeps long hair from dragging the neck pivot down and puts the limbs at their upper attachment', async () => {
+  const posedPlan: ActorPlan = { name: 'Long hair', parts: [
+    { shape: 'box', color: '#222288', position: [0, 0.75, 0], size: [0.50, 0.5, 0.4], joint: 'body' },
+    { shape: 'sphere', color: '#ddaa77', position: [0, 1.25, 0], size: [0.5, 0.5, 0.5], joint: 'head', mirror: true },
+    { shape: 'lock', color: '#333388', position: [0.22, 0.9, 0], size: [0.3, 1.1, 0.3], joint: 'head', mirror: true },
+    { shape: 'capsule', color: '#222266', position: [0.3, 0.75, 0], size: [0.13, 0.5, 0.1], joint: 'leftArm' },
+    { shape: 'capsule', color: '#dddddd', position: [0.1, 0.27, 0], size: [0.13, 0.5, 0.1], joint: 'leftLeg' },
+  ] };
+  const signal = new AbortController().signal;
+  const file = await buildActorGlb(posedPlan, signal);
+  const withoutCenteredMirror = await buildActorGlb({ ...posedPlan, parts: posedPlan.parts.map((part, i) => i === 1 ? { ...part, mirror: false } : part) }, signal);
+  expect(file.size).toBe(withoutCenteredMirror.size);
+  const { scene } = await new GLTFLoader().parseAsync(await file.arrayBuffer(), '');
+  const mesh = scene.getObjectByName('actorMesh') as SkinnedMesh;
+  try {
+    const world = (name: string) => mesh.skeleton.getBoneByName(name)!.getWorldPosition(new Vector3());
+    expect(world('head').y).toBeCloseTo(1);
+    expect(world('leftArm').y).toBeCloseTo(0.94);
+    expect(world('leftLeg').y).toBeCloseTo(0.52);
+    expect(world('leftLeg').x).toBeCloseTo(0.1);
+  } finally {
+    mesh.geometry.dispose();
+    mesh.skeleton.dispose();
+    (mesh.material as MeshStandardMaterial).dispose();
+  }
+});
+
+it('does not spend full-size sphere tessellation on tiny highlights', async () => {
+  const glb = await buildActorGlb({ name: 'LOD', parts: [
+    { shape: 'sphere', color: '#123456', position: [0, 1, 0], size: [1, 1, 1], joint: 'body' },
+    { shape: 'sphere', color: '#ffffff', position: [0, 1, 0.5], size: [0.03, 0.03, 0.025], joint: 'body' },
+  ] }, new AbortController().signal);
+  const { scene } = await new GLTFLoader().parseAsync(await glb.arrayBuffer(), '');
+  const mesh = scene.getObjectByName('actorMesh') as SkinnedMesh;
+  try {
+    const color = mesh.geometry.attributes.color;
+    const fullSize = Array.from({ length: color.count }, (_, i) => color.getX(i)).filter(x => x < 0.5).length;
+    expect(fullSize).toBeGreaterThan(300);
+    expect(color.count - fullSize).toBeLessThan(fullSize / 4);
+  } finally {
+    mesh.geometry.dispose();
+    mesh.skeleton.dispose();
+    (mesh.material as MeshStandardMaterial).dispose();
   }
 });
 

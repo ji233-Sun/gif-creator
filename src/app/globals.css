@@ -1950,6 +1950,146 @@ h2 {
 
 /* ===== Original Image & 3D Model Controls ===== */
 
+.portrait-mode-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 14px 12px;
+}
+
+.portrait-mode-choice [aria-pressed="true"],
+.portrait-mask-actions [aria-pressed="true"] {
+  background: var(--surface-blue, #e9f7ff);
+  color: var(--blue-deep);
+  border-color: var(--blue);
+}
+
+.portrait-canvas {
+  z-index: 1;
+  position: absolute;
+  inset: 0;
+}
+
+.portrait-canvas canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.portrait-stage .original-frame {
+  max-height: 100%;
+}
+
+.portrait-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.portrait-direct {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(171, 163, 205, .30);
+  border-radius: 12px;
+  background: rgba(248, 245, 255, .64);
+}
+
+.portrait-direct > label:first-child,
+.portrait-take strong {
+  color: var(--pink-deep);
+  font-weight: 750;
+  font-size: .85rem;
+}
+
+.portrait-direct textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 84px;
+  padding: 9px 11px;
+  border: 1px solid rgba(146, 163, 183, .42);
+  border-radius: 9px;
+  resize: vertical;
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+}
+
+.portrait-direct textarea:focus-visible {
+  outline: 2px solid var(--blue-deep);
+  outline-offset: 2px;
+}
+
+.portrait-take {
+  font-size: .84rem;
+  overflow-wrap: anywhere;
+}
+
+.portrait-take p {
+  margin: 4px 0 0;
+}
+
+.portrait-field {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: .82rem;
+}
+
+.portrait-field select {
+  padding: 6px 9px;
+  border-radius: 8px;
+  border: 1px solid rgba(146, 163, 183, .38);
+  color: inherit;
+  background: var(--surface);
+  font: inherit;
+}
+
+.portrait-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--pink-deep);
+}
+
+.portrait-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.portrait-mask-stage {
+  container-type: size;
+  background: conic-gradient(#e5e5f0 25%, #faf9ff 0 50%, #e5e5f0 0 75%, #faf9ff 0) 0 0 / 18px 18px;
+}
+
+.portrait-mask-surface {
+  position: relative;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.portrait-mask-surface canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.portrait-brush-cursor {
+  position: absolute;
+  border: 1px solid white;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px #38344d;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+}
+
+
 .original-preview {
   position: absolute;
   inset: 20px 20px 16px;

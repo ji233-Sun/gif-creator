@@ -5,10 +5,12 @@ import { failure, guard, HttpError, readJson } from '@/server/http';
 import { validateImagePixels } from '@/server/model-image';
 import { baseUrlSchema, directorBaseUrlHeader, directorModelHeader, directorProviderHeader, keySchema, modelSchema, providerSchema } from '@/director/settings';
 import { invokeDirector } from '@/server/ai-transport';
+import { performanceInstructions } from '@/director/performance';
+import { portraitPromptLimit, portraitScoreToolSchema, portraitToolName } from '@/score/portrait';
 import { chatGptAccessToken } from '@/server/chatgpt-session';
 
 export const runtime = 'nodejs';
-const toolName = z.literal('design_actor');
+const toolName = z.enum(['design_actor', portraitToolName]);
 const textPart = z.object({ type: z.literal('text'), text: z.string() });
 const maxImageBase64 = 5 * 1024 * 1024;
 const imageUrl = z.string().max(maxImageBase64 + 32).refine(value => {
@@ -53,10 +55,16 @@ export async function POST(request: NextRequest) {
     if (!parsed.success) throw new HttpError(400, '模型请求格式无效。');
     const [system, user] = parsed.data.messages;
     const image = user.content.find(part => part.type === 'image_url');
-    if (!image || !user.content.some(part => part.type === 'text')) throw new HttpError(400, '定妆需要一张角色图和提示文字。');
+    const text = user.content.find(part => part.type === 'text');
+    if (!image || !text) throw new HttpError(400, '导演需要一张角色图和提示文字。');
+    const tool = parsed.data.tools[0].function;
+    const performance = tool.name === portraitToolName;
+    if (performance && (!text.text.trim() || text.text.trim().length > portraitPromptLimit)) {
+      throw new HttpError(400, '请输入 1–600 字的开拍指令。');
+    }
     const url = image.image_url.url;
     await validateImagePixels(Buffer.from(url.slice(url.indexOf(',') + 1), 'base64'));
-    return await invokeDirector({ provider: provider.data, model: model.data, baseUrl: baseUrl?.data, key, system: system.content,
-      parts: user.content, tool: parsed.data.tools[0].function, signal: request.signal });
+    return await invokeDirector({ provider: provider.data, model: model.data, baseUrl: baseUrl?.data, key, system: performance ? performanceInstructions : system.content,
+      parts: user.content, tool: performance ? { name: portraitToolName, description: '提交 GIF 动作谱', parameters: portraitScoreToolSchema } : tool, signal: request.signal });
   } catch (error) { return failure(error); }
 }

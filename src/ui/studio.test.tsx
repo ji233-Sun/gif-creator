@@ -38,6 +38,9 @@ it('replaces the dressing button with elapsed time and the actual stage until st
     Object.defineProperty(fileInput, 'files', { value: [new NodeFile([pngHeader], 'test.png', { type: 'image/png' })] });
     await act(async () => fileInput.dispatchEvent(new Event('change', { bubbles: true })));
     const button = (name: string) => Array.from(host.querySelectorAll('button')).find(element => element.textContent?.trim() === name);
+    expect(button('原画开拍')?.getAttribute('aria-pressed')).toBe('true');
+    expect(button('生成模型并绑定骨骼')).toBeUndefined();
+    await act(async () => button('实验性 3D')!.click());
     expect(button('生成模型并绑定骨骼')?.disabled).toBe(true);
     await act(async () => button('配置测试模型')!.click());
     await act(async () => host.querySelector<HTMLInputElement>('.model-controls input')!.click());

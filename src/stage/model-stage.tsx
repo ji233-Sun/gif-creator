@@ -7,6 +7,7 @@ import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { hasRenderableTriangle } from './geometry';
+import { installModelLighting } from './model-lighting';
 
 export type ModelInfo = { bones: number; meshes: number };
 export type StageLoadFailure = { message: string; unusable?: boolean };
@@ -40,6 +41,7 @@ function dispose(gltf: GLTF) {
 function createStage(element: HTMLDivElement, onLost: () => void, onRestored: () => void) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   const scene = new THREE.Scene();
+  const releaseLighting = installModelLighting(renderer, scene);
   const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
   camera.position.set(3.6, 2.6, 4.6);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -52,8 +54,6 @@ function createStage(element: HTMLDivElement, onLost: () => void, onRestored: ()
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(0, 1, 0); controls.enableDamping = true;
   controls.minDistance = 1; controls.maxDistance = 12;
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x63647d, 3));
-  const light = new THREE.DirectionalLight(0xffffff, 4); light.position.set(3, 6, 4); scene.add(light);
   const grid = new THREE.GridHelper(8, 20, 0xa7a3b6, 0xd9d7e0); scene.add(grid);
   const loader = new GLTFLoader();
   const draco = new DRACOLoader().setDecoderPath('/draco/');
@@ -109,6 +109,7 @@ function createStage(element: HTMLDivElement, onLost: () => void, onRestored: ()
       grid.geometry.dispose();
       for (const material of Array.isArray(grid.material) ? grid.material : [grid.material]) material.dispose();
       draco.dispose();
+      releaseLighting();
       renderer.domElement.removeEventListener('webglcontextlost', onLost);
       renderer.domElement.removeEventListener('webglcontextrestored', onRestored);
       renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();

@@ -110,12 +110,12 @@ describe('director upstream requests', () => {
     const body = JSON.parse(String(init.body));
     const common = { model, stream: true };
     if (protocol === 'responses') {
-      expect(body).toEqual({ ...common, store: false, max_output_tokens: 4096, parallel_tool_calls: false, instructions: system,
+      expect(body).toEqual({ ...common, store: false, max_output_tokens: 6144, parallel_tool_calls: false, instructions: system,
         input: [{ role: 'user', content: [{ type: 'input_text', text: 'Make an actor' }, { type: 'input_image', image_url: image.url, detail: 'high' }] }],
         tools: [{ type: 'function', ...tool, strict: false }], tool_choice: { type: 'function', name },
       });
     } else if (protocol === 'messages') {
-      expect(body).toEqual({ ...common, system, max_tokens: 4096,
+      expect(body).toEqual({ ...common, system, max_tokens: 6144,
         messages: [{ role: 'user', content: [parts[0], { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aW1hZ2U=' } }] }],
         tools: [{ name, description: tool.description, input_schema: tool.parameters }],
         tool_choice: { type: 'tool', name, disable_parallel_tool_use: true },
@@ -124,7 +124,7 @@ describe('director upstream requests', () => {
       expect(body).toEqual({ ...common,
         messages: [{ role: 'system', content: system }, { role: 'user', content: parts }],
         tools: [{ type: 'function', function: tool }], tool_choice: { type: 'function', function: { name } },
-        ...(provider === 'openai-chat' ? { max_completion_tokens: 4096, parallel_tool_calls: false } : { max_tokens: 4096 }),
+        ...(provider === 'openai-chat' ? { max_completion_tokens: 6144, parallel_tool_calls: false } : { max_tokens: 6144 }),
         ...(provider === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
       });
     }
